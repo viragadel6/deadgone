@@ -430,7 +430,7 @@ class Supervisor:
         settings = get_settings()
         timeout = max(1.0, settings.supervisor_probe_timeout_ms / 1000)
         probes: dict[str, Probe] = {"database": self._probe_database}
-        if settings.orcarouter_api_key:
+        if settings.model_api_key:
             probes["model"] = self._probe_model
         if settings.instavm_api_key:
             probes["sandbox"] = self._probe_sandbox
@@ -485,8 +485,8 @@ class Supervisor:
         return int((time.monotonic() - started) * 1000)
 
     def _model_probe_url(self) -> str:
-        base = get_settings().orcarouter_url.rstrip("/")
-        suffix = "/chat/completions"
+        base = get_settings().model_api_url.rstrip("/")
+        suffix = "/responses"
         if base.endswith(suffix):
             base = base[: -len(suffix)]
         return f"{base}/models"
@@ -518,7 +518,7 @@ class Supervisor:
             "model",
             self._model_probe_url(),
             {
-                "Authorization": f"Bearer {settings.orcarouter_api_key}",
+                "Authorization": f"Bearer {settings.model_api_key}",
                 "Accept": "application/json",
             },
             500,

@@ -32,11 +32,11 @@ class Settings(BaseSettings):
         ),
     )
 
-    orcarouter_api_key: str = Field(
+    model_api_key: str = Field(
         default="",
         validation_alias=AliasChoices(
-            "ORCAROUTER_API_KEY",
-            "OPENROUTER_API_KEY",
+            "MODEL_API_KEY",
+            "META_API_KEY",
         ),
     )
     instavm_api_key: str = ""
@@ -46,11 +46,14 @@ class Settings(BaseSettings):
     flymyai_base_url: str = "https://api.flymy.ai"
     flymyai_image_model: str = "flymyai/nano-banana-2_1"
 
-    model_name: str = "tencent/hy4-preview"
+    model_name: str = Field(
+        default="muse-wonder-1.0",
+        validation_alias=AliasChoices("MUSE_WONDER_MODEL_NAME"),
+    )
     model_fallback_names: str = ""
     model_retry_max: int = 4
     model_stream_retry_max: int = 2
-    orcarouter_url: str = "https://api.orcarouter.ai/v1/chat/completions"
+    model_api_url: str = "https://api.meta.ai/v1/responses"
     instavm_url: str = "https://api.instavm.io"
     published_origin: str = ""
 

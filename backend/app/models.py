@@ -636,7 +636,7 @@ def _normalize_host(value: str, *, allow_ip_address: bool) -> str:
 
 
 class RuntimeConfig(_ValidatedModel):
-    orca_key: SecretStr = Field(repr=False, exclude=True)
+    model_key: SecretStr = Field(repr=False, exclude=True)
     insta_key: SecretStr | None = Field(
         default=None,
         repr=False,
@@ -649,7 +649,7 @@ class RuntimeConfig(_ValidatedModel):
     nix_installer_sha256: Sha256HexDigest
     deployment_max_request_ms: PositiveInt | None = None
 
-    @field_validator("orca_key", "insta_key")
+    @field_validator("model_key", "insta_key")
     @classmethod
     def validate_secret(cls, value: SecretStr | None) -> SecretStr | None:
         if value is None:

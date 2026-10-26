@@ -28,6 +28,7 @@ MAX_CALLS_PER_STEP = 16
 MAX_UPSTREAM_RETRIES = 5
 MODEL_CONNECT_TIMEOUT_SECONDS = 120
 MODEL_IDLE_TIMEOUT_SECONDS = 180
+MODEL_MAX_OUTPUT_TOKENS = 270_000
 
 
 @dataclass
@@ -347,6 +348,128 @@ def _now() -> float:
     return asyncio.get_running_loop().time()
 
 
+def _responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            raise ProtocolFault("Érvénytelen modellüzenet.")
+        role = message.get("role")
+        content = message.get("content")
+        if content is None:
+            content = ""
+        if not isinstance(content, str):
+            raise ProtocolFault("A modellüzenet tartalma nem szöveg.")
+        if role == "tool":
+            call_id = message.get("tool_call_id")
+            if not isinstance(call_id, str) or not call_id:
+                raise ProtocolFault("Az eszközeredményből hiányzik a hívásazonosító.")
+            output.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": content,
+                }
+            )
+            continue
+        if role not in ("system", "developer", "user", "assistant"):
+            raise ProtocolFault("Nem támogatott modellüzenet-szerep.")
+        if content or not message.get("tool_calls"):
+            output.append({"role": role, "content": content})
+        tool_calls = message.get("tool_calls") or []
+        if not isinstance(tool_calls, list):
+            raise ProtocolFault("Érvénytelen eszközhívás-lista.")
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                raise ProtocolFault("Érvénytelen eszközhívás.")
+            function = call.get("function")
+            if not isinstance(function, dict):
+                raise ProtocolFault("Érvénytelen eszközfüggvény.")
+            call_id = call.get("id")
+            name = function.get("name")
+            arguments = function.get("arguments")
+            if not isinstance(call_id, str) or not call_id:
+                raise ProtocolFault("Az eszközhívásból hiányzik az azonosító.")
+            if not isinstance(name, str) or not name:
+                raise ProtocolFault("Az eszközhívásból hiányzik a név.")
+            if isinstance(arguments, dict):
+                arguments = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+            if not isinstance(arguments, str):
+                raise ProtocolFault("Az eszközhívás argumentuma nem szöveg.")
+            if len(arguments) > MAX_TOOL_ARGUMENT_CHARS:
+                raise ProtocolFault("Az eszközhívás argumentuma túl nagy.")
+            output.append(
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": arguments,
+                }
+            )
+    return output
+
+
+def _responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    response_tools: list[dict[str, Any]] = [
+        {"type": "web_search", "search_context_size": "high"}
+    ]
+    for tool in tools:
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            raise ProtocolFault("Nem támogatott modell-eszköztípus.")
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            raise ProtocolFault("Érvénytelen modell-eszköz.")
+        name = function.get("name")
+        description = function.get("description")
+        parameters = function.get("parameters")
+        if not isinstance(name, str) or not name:
+            raise ProtocolFault("Érvénytelen modell-eszköznév.")
+        if not isinstance(description, str):
+            raise ProtocolFault("Érvénytelen modell-eszközleírás.")
+        if not isinstance(parameters, dict):
+            raise ProtocolFault("Érvénytelen modell-eszközparaméter.")
+        response_tools.append(
+            {
+                "type": "function",
+                "name": name,
+                "description": description,
+                "parameters": parameters,
+            }
+        )
+    return response_tools
+
+
+def _response_usage(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    prompt_tokens = value.get("input_tokens")
+    completion_tokens = value.get("output_tokens")
+    if (
+        isinstance(prompt_tokens, bool)
+        or not isinstance(prompt_tokens, int)
+        or prompt_tokens < 0
+        or isinstance(completion_tokens, bool)
+        or not isinstance(completion_tokens, int)
+        or completion_tokens < 0
+    ):
+        return None
+    usage: dict[str, Any] = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }
+    input_details = value.get("input_tokens_details")
+    if isinstance(input_details, dict):
+        cached_tokens = input_details.get("cached_tokens")
+        if isinstance(cached_tokens, int) and not isinstance(cached_tokens, bool):
+            usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
+    output_details = value.get("output_tokens_details")
+    if isinstance(output_details, dict):
+        reasoning_tokens = output_details.get("reasoning_tokens")
+        if isinstance(reasoning_tokens, int) and not isinstance(reasoning_tokens, bool):
+            usage["completion_tokens_details"] = {"reasoning_tokens": reasoning_tokens}
+    return usage
+
+
 async def call_model(
     config: RuntimeConfig,
     messages: list[dict[str, Any]],
@@ -357,15 +480,16 @@ async def call_model(
     from app.config import get_settings
 
     settings = get_settings()
-    payload: dict[str, Any] = {
+    payload = {
         "model": settings.model_name,
-        "messages": messages,
+        "input": _responses_input(messages),
         "stream": True,
-        "max_completion_tokens": 8192,
+        "temperature": 1,
+        "max_output_tokens": MODEL_MAX_OUTPUT_TOKENS,
+        "top_p": 1,
+        "reasoning": {"effort": "max"},
+        "tools": _responses_tools(tools),
     }
-    if tools:
-        payload["tools"] = tools
-        payload["tool_choice"] = "auto"
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     client = httpx.AsyncClient(
         timeout=httpx.Timeout(
@@ -385,9 +509,9 @@ async def call_model(
             raise RuntimeLimitFault()
         request = client.build_request(
             "POST",
-            settings.orcarouter_url,
+            settings.model_api_url,
             headers={
-                "Authorization": f"Bearer {config.orca_key}",
+                "Authorization": f"Bearer {config.model_key.get_secret_value()}",
                 "Content-Type": "application/json",
                 "Accept": "text/event-stream",
             },
@@ -442,107 +566,213 @@ async def receive_model(
     send,
     cancel: asyncio.Event,
 ) -> ModelResponse:
-    finish: str | None = None
-    done = False
+    completed = False
     content = ""
     content_bytes = 0
     usage: dict[str, Any] | None = None
-    parts: dict[int, ToolCallBuilder] = {}
+    tool_items: dict[str, ToolCallBuilder] = {}
+
+    def store_function_call(item: Any, final: bool = False) -> None:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            return
+        item_id = item.get("id")
+        call_id = item.get("call_id")
+        if not isinstance(call_id, str) or not call_id:
+            call_id = item_id
+        if not isinstance(call_id, str) or not call_id:
+            raise ProtocolFault("Hiányzik a modell eszközhívás-azonosítója.")
+        if not isinstance(item_id, str) or not item_id:
+            item_id = call_id
+        builder = tool_items.setdefault(item_id, ToolCallBuilder())
+        if len(tool_items) > MAX_CALLS_PER_STEP:
+            raise ProtocolFault("Túl sok modell eszközhívás.")
+        if builder.id and builder.id != call_id:
+            raise ProtocolFault("Ütköző modell eszközhívás-azonosító.")
+        builder.id = call_id
+        name = item.get("name")
+        if name is not None:
+            if not isinstance(name, str) or not name:
+                raise ProtocolFault("Érvénytelen modell eszközhívás-név.")
+            builder.name = name
+        arguments = item.get("arguments")
+        if arguments is not None:
+            if not isinstance(arguments, str):
+                raise ProtocolFault("Érvénytelen modell eszközhívás-argumentum.")
+            if len(arguments) > MAX_TOOL_ARGUMENT_CHARS:
+                raise ProtocolFault("Az eszközhívás argumentuma túl nagy.")
+            if final or not builder.arguments:
+                builder.arguments = arguments
+                builder.argument_snapshot = arguments
+                builder.argument_parts = 1 if arguments else 0
+                builder.argument_snapshot_valid = True
+                builder.argument_overflow = False
+
+    def output_text(response: dict[str, Any]) -> str:
+        pieces: list[str] = []
+        output_items = response.get("output")
+        if not isinstance(output_items, list):
+            return ""
+        for item in output_items:
+            if not isinstance(item, dict):
+                continue
+            store_function_call(item, final=True)
+            if item.get("type") != "message":
+                continue
+            parts = item.get("content")
+            if not isinstance(parts, list):
+                continue
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                text = part.get("text")
+                if part.get("type") in ("output_text", "text") and isinstance(text, str):
+                    pieces.append(text)
+        return "".join(pieces)
+
     try:
         async for data in parse_sse(stream.response.aiter_bytes(), cancel, stream.touch):
             if data == "[DONE]":
-                done = True
                 break
             try:
                 event = json.loads(data)
             except json.JSONDecodeError as exc:
                 raise ProtocolFault(
-                "Hibás JSON az SSE eseményben.", code="MODEL_PROTOCOL"
-            ) from exc
+                    "Hibás JSON az SSE eseményben.", code="MODEL_PROTOCOL"
+                ) from exc
             if not isinstance(event, dict):
                 raise ProtocolFault("Érvénytelen SSE esemény.", code="MODEL_PROTOCOL")
-            if event.get("error") is not None:
-                raise ProviderFault("MODEL_ERROR", "A modell hibát jelzett.")
-            if isinstance(event.get("usage"), dict):
-                usage = event["usage"]
-            choices = event.get("choices")
-            if choices is None:
-                continue
-            if not isinstance(choices, list) or len(choices) == 0:
-                continue
-            if len(choices) != 1 or not isinstance(choices[0], dict):
-                raise ProtocolFault("Érvénytelen választási rekord.", code="MODEL_PROTOCOL")
-            choice = choices[0]
-            finish_reason = choice.get("finish_reason")
-            if finish_reason is not None:
-                if not isinstance(finish_reason, str) or (finish is not None and finish != finish_reason):
-                    raise ProtocolFault(
-                        "Ütköző vagy érvénytelen befejezési ok.", code="MODEL_PROTOCOL"
-                    )
-                finish = finish_reason
-            delta = choice.get("delta")
-            if not isinstance(delta, dict):
-                continue
-            if delta.get("refusal") is not None:
-                raise ProviderFault("MODEL_REFUSAL", "A modell visszautasította a kérést.", 422)
-            reasoning = ""
-            for key in ("reasoning_content", "reasoning", "thinking"):
-                value = delta.get(key)
-                if isinstance(value, str):
-                    reasoning = value
-                    break
-            if reasoning:
-                await send(
-                    {
-                        "type": "delta",
-                        "task_id": task_id,
-                        "step": step,
-                        "reasoning_content": reasoning,
-                    }
-                )
-            content_delta = delta.get("content")
-            if content_delta is not None:
-                if not isinstance(content_delta, str):
+            event_type = event.get("type")
+            if not isinstance(event_type, str):
+                raise ProtocolFault("Hiányzik a Meta Responses eseménytípusa.")
+            if event_type in ("error", "response.failed"):
+                raise ProviderFault("MODEL_ERROR", "A Muse Wonder modell hibát jelzett.", 502)
+            if event_type == "response.incomplete":
+                response = event.get("response")
+                details = response.get("incomplete_details") if isinstance(response, dict) else None
+                reason = details.get("reason") if isinstance(details, dict) else None
+                if reason in ("max_output_tokens", "max_tokens"):
                     raise ProviderFault(
-                        "UNSUPPORTED_MODEL_CONTENT",
-                        "A modell nem támogatott tartalomformátumot küldött.",
+                        "MODEL_TRUNCATED",
+                        "A Muse Wonder válasza elérte a kimeneti tokenkorlátot.",
+                        422,
                     )
-                content += content_delta
-                content_bytes += len(content_delta.encode("utf-8"))
+                raise ProviderFault("MODEL_INCOMPLETE", "A Muse Wonder válasza nem teljes.", 422)
+            if event_type == "response.output_text.delta":
+                delta = event.get("delta")
+                if not isinstance(delta, str):
+                    raise ProtocolFault("Érvénytelen Muse Wonder szövegfragmentum.")
+                content += delta
+                content_bytes += len(delta.encode("utf-8"))
                 if content_bytes > MAX_OUTPUT_BYTES:
                     raise ProviderFault("MODEL_OUTPUT_LIMIT", "A modell kimenete túl hosszú.")
-                if content_delta:
+                if delta:
                     await send(
                         {
                             "type": "delta",
                             "task_id": task_id,
                             "step": step,
-                            "content": content_delta,
+                            "content": delta,
                         }
                     )
-            validate_tool_delta(choice, parts)
+                continue
+            if event_type == "response.output_item.added":
+                store_function_call(event.get("item"))
+                continue
+            if event_type in (
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+            ):
+                item_id = event.get("item_id")
+                if not isinstance(item_id, str) or not item_id:
+                    raise ProtocolFault("A modell eszközargumentumából hiányzik az elemazonosító.")
+                builder = tool_items.setdefault(item_id, ToolCallBuilder())
+                if len(tool_items) > MAX_CALLS_PER_STEP:
+                    raise ProtocolFault("Túl sok modell eszközhívás.")
+                arguments = event.get("delta") if event_type.endswith(".delta") else event.get("arguments")
+                if not isinstance(arguments, str):
+                    raise ProtocolFault("Érvénytelen Muse Wonder eszközargumentum.")
+                if len(arguments) > MAX_TOOL_ARGUMENT_CHARS:
+                    raise ProtocolFault("Az eszközhívás argumentuma túl nagy.")
+                if event_type.endswith(".delta"):
+                    (
+                        builder.arguments,
+                        builder.argument_snapshot,
+                        builder.argument_parts,
+                        builder.argument_snapshot_valid,
+                        builder.argument_overflow,
+                    ) = _append_fragment(
+                        builder.arguments,
+                        builder.argument_snapshot,
+                        builder.argument_parts,
+                        builder.argument_snapshot_valid,
+                        builder.argument_overflow,
+                        arguments,
+                        MAX_TOOL_ARGUMENT_CHARS,
+                    )
+                else:
+                    builder.arguments = arguments
+                    builder.argument_snapshot = arguments
+                    builder.argument_parts = 1 if arguments else 0
+                    builder.argument_snapshot_valid = True
+                    builder.argument_overflow = False
+                continue
+            if event_type == "response.output_item.done":
+                store_function_call(event.get("item"), final=True)
+                continue
+            if event_type == "response.completed":
+                response = event.get("response")
+                if not isinstance(response, dict) or response.get("status") not in (
+                    None,
+                    "completed",
+                ):
+                    raise ProtocolFault("A Muse Wonder válasza érvénytelen lezárást adott.")
+                final_content = output_text(response)
+                if final_content and final_content != content:
+                    if final_content.startswith(content):
+                        delta = final_content[len(content) :]
+                        content += delta
+                        content_bytes += len(delta.encode("utf-8"))
+                        if content_bytes > MAX_OUTPUT_BYTES:
+                            raise ProviderFault("MODEL_OUTPUT_LIMIT", "A modell kimenete túl hosszú.")
+                        if delta:
+                            await send(
+                                {
+                                    "type": "delta",
+                                    "task_id": task_id,
+                                    "step": step,
+                                    "content": delta,
+                                }
+                            )
+                    else:
+                        raise ProtocolFault("A Muse Wonder végső szövege eltér az adatfolyamtól.")
+                usage = _response_usage(response.get("usage"))
+                completed = True
+                break
+            if event_type == "response.cancelled":
+                raise AgentFault("CANCELLED", "A feladat megszakadt.", 499)
+            if event_type in (
+                "response.created",
+                "response.in_progress",
+                "response.content_part.added",
+                "response.content_part.done",
+                "response.output_text.done",
+                "response.reasoning_summary_text.delta",
+                "response.reasoning_summary_text.done",
+            ):
+                continue
     finally:
         await stream.response.aclose()
         await stream.client.aclose()
-    if not done or finish is None:
+    if not completed:
         raise ProtocolFault(
             "A modell adatfolyama nem fejeződött be szabályosan.", code="MODEL_INCOMPLETE"
         )
-    if finish not in ("stop", "tool_calls"):
-        if finish == "length":
-            raise ProviderFault("MODEL_TRUNCATED", f"A modell befejezési állapota: {finish}", 422)
-        if finish == "content_filter":
-            raise ProviderFault("MODEL_FILTERED", f"A modell befejezési állapota: {finish}", 422)
-        raise ProviderFault(
-            "MODEL_FINISH_UNSUPPORTED", f"A modell befejezési állapota: {finish}", 422
-        )
-    calls = [finalize_tool_call(parts[key]) for key in sorted(parts)]
+    calls = [finalize_tool_call(builder) for builder in tool_items.values()]
+    if len(calls) > MAX_CALLS_PER_STEP:
+        raise ProtocolFault("Túl sok modell eszközhívás.")
     if any(not call.id or not call.function_name for call in calls):
         raise ProtocolFault("Hiányos eszközhívási adatok.", code="MODEL_PROTOCOL")
     if len({call.id for call in calls}) != len(calls):
         raise ProtocolFault("Ismételt eszközazonosító.", code="MODEL_PROTOCOL")
-    if (finish == "tool_calls" and not calls) or (finish == "stop" and calls):
-        raise ProtocolFault(
-            "A lezárás és az eszközhívások ellentmondanak.", code="MODEL_PROTOCOL"
-        )
+    finish = "tool_calls" if calls else "stop"
     return ModelResponse(content=content, calls=calls, finish=finish, usage=usage)

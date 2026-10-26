@@ -149,14 +149,14 @@ def utf8_length(value: str) -> int:
 
 def required_environment() -> RuntimeConfig:
     settings = get_settings()
-    orca_key = settings.orcarouter_api_key
+    model_key = settings.model_api_key
     insta_raw = settings.instavm_api_key
     if not insta_raw and "INSTAVM_API_KEY" in os.environ:
         raise ConfigurationFault("INSTAVM_API_KEY érvénytelen.")
     insta_key = insta_raw or None
     declared = settings.chat_deployment_max_request_ms.strip()
-    if not orca_key or len(orca_key.strip()) < 12 or any(char.isspace() for char in orca_key):
-        raise ConfigurationFault("ORCAROUTER_API_KEY érvénytelen.")
+    if not model_key or len(model_key.strip()) < 12 or any(char.isspace() for char in model_key):
+        raise ConfigurationFault("A modell API-kulcs érvénytelen.")
     if insta_key is not None and (
         len(insta_key.strip()) < 12 or any(char.isspace() for char in insta_key)
     ):
@@ -178,7 +178,7 @@ def required_environment() -> RuntimeConfig:
         raise ConfigurationFault(str(exc)) from exc
     allowed_domains = list(dict.fromkeys([*sandbox_hosts, *NIX_EGRESS_DOMAINS]))
     return RuntimeConfig(
-        orca_key=orca_key,
+        model_key=model_key,
         insta_key=insta_key,
         browser_hosts=set(browser_hosts),
         allowed_domains=allowed_domains,
