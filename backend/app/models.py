@@ -135,6 +135,7 @@ class ToolStatus(_ValueEnum):
     COMPLETED = "completed"
     ERROR = "error"
     INTERRUPTED = "interrupted"
+    UNKNOWN = "unknown"
 
 
 class TerminalState(_ValueEnum):
@@ -487,6 +488,59 @@ class ToolOutput(_ValidatedModel):
     result: dict[str, JsonValue] = Field(default_factory=dict)
     error: ToolError | None = None
     interruption_reason: NonEmptyString | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_error_details(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+
+        data = dict(value)
+        status = data.get("status")
+        if status not in (ToolStatus.ERROR, ToolStatus.ERROR.value) or data.get("error") is not None:
+            return data
+
+        result = data.get("result")
+        result_data = result if isinstance(result, Mapping) else {}
+        nested_error = result_data.get("error")
+        nested_data = nested_error if isinstance(nested_error, Mapping) else {}
+        source_code = nested_data.get("code", result_data.get("code"))
+        source_message = nested_data.get("message", result_data.get("message"))
+        if not isinstance(source_message, str) or not source_message.strip():
+            source_message = result_data.get("stderr")
+        if not isinstance(source_message, str) or not source_message.strip():
+            exit_code = result_data.get("exit_code")
+            if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+                source_message = (
+                    f"Az eszköz végrehajtása sikertelen (kilépési kód: {exit_code})."
+                )
+            else:
+                source_message = "Az eszköz végrehajtása sikertelen."
+
+        if source_code in ("INVALID_ARGUMENT", "INVALID_ARGUMENTS"):
+            error_code = ToolErrorCode.INVALID_ARGUMENTS
+        elif source_code in ("UNKNOWN_TOOL", "NOT_FOUND"):
+            error_code = ToolErrorCode.NOT_FOUND
+        elif source_code in ("INVALID_OUTPUT", "PROVIDER_PROTOCOL"):
+            error_code = ToolErrorCode.INVALID_OUTPUT
+        else:
+            error_code = ToolErrorCode.EXECUTION_ERROR
+
+        details: dict[str, JsonValue] = {}
+        if source_code is not None:
+            details["source_code"] = str(source_code)[:128]
+        for key in ("exit_code", "port"):
+            detail_value = result_data.get(key)
+            if isinstance(detail_value, (str, int, float, bool)) or detail_value is None:
+                if detail_value is not None:
+                    details[key] = detail_value
+
+        data["error"] = {
+            "code": error_code,
+            "message": source_message.strip()[:2000],
+            "details": details,
+        }
+        return data
 
     @model_validator(mode="after")
     def validate_status_details(self) -> ToolOutput:

@@ -33,7 +33,16 @@ from app.errors import (
     StepLimitFault,
     ToolUncertainFault,
 )
-from app.models import ModelResponse, RuntimeConfig, TerminalState, ToolCall, ToolOutput, ToolStatus
+from app.models import (
+    ModelResponse,
+    RuntimeConfig,
+    TerminalState,
+    ToolCall,
+    ToolError,
+    ToolErrorCode,
+    ToolOutput,
+    ToolStatus,
+)
 from app.services import checkpoints
 from app.services.checkpoints import CHECKPOINT_VERSION, Checkpoint, LedgerEntry, PendingCall
 from app.utils.clock import as_dict, as_list, as_str
@@ -998,6 +1007,11 @@ class AgentRuntime:
                     "code": "SANDBOX_DISABLED",
                     "message": "Az InstaVM eszközök le vannak tiltva.",
                 },
+                error=ToolError(
+                    code=ToolErrorCode.EXECUTION_ERROR,
+                    message="Az InstaVM eszközök le vannak tiltva.",
+                    details={"fault_code": "SANDBOX_DISABLED"},
+                ),
             )
         if name == "run_shell":
             return await self.sandbox.exec(
@@ -1118,15 +1132,38 @@ class AgentRuntime:
                 if fault.code in ("UNKNOWN_OUTCOME", "EXECUTION_UNKNOWN")
                 else ToolStatus.ERROR
             )
+            error = None
+            if status is ToolStatus.ERROR:
+                if fault.code in ("INVALID_ARGUMENT", "INVALID_ARGUMENTS"):
+                    error_code = ToolErrorCode.INVALID_ARGUMENTS
+                elif fault.code in ("UNKNOWN_TOOL", "NOT_FOUND"):
+                    error_code = ToolErrorCode.NOT_FOUND
+                elif fault.code in ("INVALID_OUTPUT", "PROVIDER_PROTOCOL"):
+                    error_code = ToolErrorCode.INVALID_OUTPUT
+                else:
+                    error_code = ToolErrorCode.EXECUTION_ERROR
+                error = ToolError(
+                    code=error_code,
+                    message=fault.message or "Az eszköz végrehajtása sikertelen.",
+                    details={"fault_code": fault.code},
+                )
             return ToolOutput(
-                status=status, result={"code": fault.code, "message": fault.message}
+                status=status,
+                result={"code": fault.code, "message": fault.message},
+                error=error,
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            message = f"Eszközfuttatási hiba: {exc}"
             return ToolOutput(
                 status=ToolStatus.ERROR,
-                result={"code": "TOOL_FAILURE", "message": f"Eszközfuttatási hiba: {exc}"},
+                result={"code": "TOOL_FAILURE", "message": message},
+                error=ToolError(
+                    code=ToolErrorCode.EXECUTION_ERROR,
+                    message=message or "Az eszköz végrehajtása sikertelen.",
+                    details={"fault_code": "TOOL_FAILURE"},
+                ),
             )
 
     async def recreate_sandbox(self, reason: str) -> bool:
