@@ -1,0 +1,1 @@
+- [Supabase migration target](supabase-migration-target.md) — verify the CLI project ID, runtime API URL, and direct database connection all refer to the approved project.
