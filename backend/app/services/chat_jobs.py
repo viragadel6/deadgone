@@ -71,6 +71,8 @@ def _reap(task: asyncio.Task[Any]) -> None:
 
 def supervisor_origin() -> str | None:
     settings = get_settings()
+    if not settings.worker_token:
+        return None
     candidates: list[str] = []
     for raw in (settings.app_origins, settings.app_origin, settings.published_origin):
         for entry in (raw or "").split(","):

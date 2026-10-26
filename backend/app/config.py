@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,9 +24,21 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_publishable_key: str = ""
     supabase_anon_key: str = ""
-    supabase_service_role_key: str = ""
+    supabase_service_role_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "SUPABASE_SERVICE_ROLE_KEY",
+            "SUPABASE_SECRET_KEY",
+        ),
+    )
 
-    orcarouter_api_key: str = ""
+    orcarouter_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ORCAROUTER_API_KEY",
+            "OPENROUTER_API_KEY",
+        ),
+    )
     instavm_api_key: str = ""
     browser_use_api_key: str = ""
     gemini_api_key: str = ""
@@ -39,7 +52,7 @@ class Settings(BaseSettings):
     model_stream_retry_max: int = 2
     orcarouter_url: str = "https://api.orcarouter.ai/v1/chat/completions"
     instavm_url: str = "https://api.instavm.io"
-    published_origin: str = "https://chat-pal-deploy.lovable.app"
+    published_origin: str = ""
 
     supervisor_enabled: bool = True
     supervisor_interval_ms: int = 15_000

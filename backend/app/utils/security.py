@@ -96,6 +96,8 @@ def host_list(raw: str, message: str) -> list[str]:
 
 
 def worker_origin(request_url: str) -> str | None:
+    if not get_settings().worker_token:
+        return None
     parsed = urlparse(request_url)
     hostname = (parsed.hostname or "").lower()
     if hostname in ("localhost", "127.0.0.1"):
