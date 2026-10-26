@@ -60,7 +60,7 @@ PHASES = (
 )
 
 TRANSITIONS: dict[str, tuple[str, ...]] = {
-    "osPerceive": ("osDeliberate", "osConsolidate"),
+    "osPerceive": ("osDeliberate", "osAct", "osConsolidate"),
     "osDeliberate": ("osAct", "osConsolidate"),
     "osAct": ("osAct", "osValidate", "osReflect", "osPerceive", "osDeliberate", "osConsolidate"),
     "osValidate": ("osReflect", "osConsolidate"),

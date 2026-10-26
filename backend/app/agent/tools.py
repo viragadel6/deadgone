@@ -28,6 +28,7 @@ TOOL_NAMES = (
     "expose_port",
     "browse_url",
     "update_plan",
+    "cognitive_deliberate",
     "reason",
     "update_state",
     "delegate_task",
@@ -264,12 +265,29 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         ),
         fields={"plan": _string("Full current plan", MAX_PLAN_LENGTH)},
     ),
+    "cognitive_deliberate": ToolSpec(
+        name="cognitive_deliberate",
+        description=(
+            "Run the strategic cognitive planner for the current task and create subgoals, "
+            "next steps, and verifiable completion conditions. Use only when the task is "
+            "multi-step, ambiguous, novel, or consequential. Do not use for greetings, "
+            "ordinary conversation, or straightforward one-step answers."
+        ),
+        fields={
+            "focus": _string(
+                "Optional detail about the planning question or risk to focus on",
+                4000,
+                required=False,
+            )
+        },
+    ),
     "reason": ToolSpec(
         name="reason",
         description=(
             "Isolated recursive reasoning: decompose a complex sub-problem into a tree, examine "
             "sub-questions per branch independently and summarize them, without modifying the "
-            "global task state."
+            "global task state. Use only when the task needs deeper analysis; do not use for "
+            "greetings, ordinary conversation, or straightforward one-step answers."
         ),
         fields={
             "question": _string("The complex question to investigate", MAX_REASON_QUESTION),
@@ -480,6 +498,7 @@ TOOL_ACTIONS: dict[str, str] = {
     "multi_model_consensus": "Comparing the findings of multiple models.",
     "write_file": "Saving the finished file.",
     "read_file": "Reviewing the file contents.",
+    "cognitive_deliberate": "Planning the task using the cognitive system.",
     "reason": "Deliberating the next decision in detail.",
     "update_state": "Updating the status of sub-goals.",
     "update_plan": "Updating the work plan.",
