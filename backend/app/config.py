@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     flymyai_base_url: str = "https://api.flymy.ai"
     flymyai_image_model: str = "flymyai/nano-banana-2_1"
 
-    model_name: str = "tencent/hy4-preview-free"
+    model_name: str = "tencent/hy4-preview"
     model_fallback_names: str = ""
     model_retry_max: int = 4
     model_stream_retry_max: int = 2
