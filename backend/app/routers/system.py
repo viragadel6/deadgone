@@ -56,17 +56,27 @@ def _failure(
 
 def _retry_after(exc: RateLimitFault) -> str:
     raw = getattr(exc, "retry_after", None)
-    try:
-        seconds = int(raw) if raw is not None else DEFAULT_RETRY_AFTER
-    except (TypeError, ValueError, OverflowError):
-        seconds = DEFAULT_RETRY_AFTER
+    seconds = DEFAULT_RETRY_AFTER
+    if raw is not None:
+        try:
+            val = float(raw)
+            if val != val or val == float("inf") or val == float("-inf"):
+                seconds = DEFAULT_RETRY_AFTER
+            else:
+                seconds = int(val)
+                if val > seconds:
+                    seconds += 1
+        except (TypeError, ValueError, OverflowError):
+            seconds = DEFAULT_RETRY_AFTER
     return str(min(MAX_RETRY_AFTER, max(MIN_RETRY_AFTER, seconds)))
 
 
 def _rate_limit_failure(exc: RateLimitFault) -> JSONResponse:
+    code = getattr(exc, "code", "RATE_LIMITED")
+    message = getattr(exc, "message", "Túl sok kérés.")
     return JSONResponse(
         status_code=429,
-        content={"error": {"code": exc.code, "message": exc.message}},
+        content={"error": {"code": code, "message": message}},
         headers={**NO_STORE, "Retry-After": _retry_after(exc)},
     )
 
@@ -75,16 +85,22 @@ def _admin_denied(request: Request) -> JSONResponse | None:
     error = admin_error(request)
     if error is None:
         return None
-    message, status_code = error
-    return _failure(message, status_code, "ADMIN_ACCESS_DENIED")
+    if isinstance(error, tuple) and len(error) == 2:
+        message, status_code = error
+    else:
+        message, status_code = "Hozzáférés megtagadva.", 403
+    return _failure(str(message), int(status_code), "ADMIN_ACCESS_DENIED")
 
 
 def _error_code(exc: DatabaseError) -> str:
-    return str(exc.code or "").strip().upper()
+    return str(getattr(exc, "code", None) or "").strip().upper()
 
 
 def _error_message(exc: DatabaseError) -> str:
-    return str(exc.message or "").strip().lower()
+    msg = getattr(exc, "message", None)
+    if not isinstance(msg, str) or not msg.strip():
+        msg = str(exc)
+    return msg.strip().lower()
 
 
 def _is_missing_column_error(exc: DatabaseError) -> bool:
@@ -105,8 +121,51 @@ def _is_missing_table_error(exc: DatabaseError) -> bool:
     return "relation" in message and "does not exist" in message
 
 
-def _row_summary(row: Any) -> dict[str, Any]:
-    record = row if isinstance(row, dict) else {}
+def _admin_database() -> Any:
+    try:
+        db = database_module.get_admin_database()
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        raise DatabaseError("Az adatbázis nem érhető el.", 502) from exc
+    if db is None:
+        raise DatabaseError("Az adatbázis nem érhető el.", 502)
+    return db
+
+
+def _database_rows(response: Any, message: str) -> list[dict[str, Any]]:
+    if isinstance(response, dict):
+        rows = response.get("rows")
+        if rows is None:
+            rows = response.get("data")
+    else:
+        rows = getattr(response, "rows", None)
+        if rows is None:
+            rows = getattr(response, "data", None)
+    if rows is None or not isinstance(rows, (list, tuple)):
+        raise DatabaseError(message, 502)
+    sanitized: list[dict[str, Any]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            sanitized.append(row)
+        elif hasattr(row, "model_dump") and callable(row.model_dump):
+            sanitized.append(row.model_dump())
+        elif hasattr(row, "dict") and callable(row.dict):
+            sanitized.append(row.dict())
+        elif hasattr(row, "items") and callable(row.items):
+            sanitized.append(dict(row.items()))
+        else:
+            raise DatabaseError(message, 502)
+    return sanitized
+
+
+def _bool(val: Any) -> bool:
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "t", "yes", "on")
+    return bool(val)
+
+
+def _row_summary(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "job_id": as_str(record.get("id")),
         "status": as_str(record.get("status")),
@@ -118,12 +177,11 @@ def _row_summary(row: Any) -> dict[str, Any]:
         "next_attempt_at": as_str(record.get("next_attempt_at")),
         "attempts": as_int(record.get("attempts")),
         "last_error": as_str(record.get("last_error"), DETAIL_CHARS),
-        "stop_requested": bool(record.get("stop_requested")),
+        "stop_requested": _bool(record.get("stop_requested")),
     }
 
 
-def _recovery_summary(row: Any) -> dict[str, Any]:
-    record = row if isinstance(row, dict) else {}
+def _recovery_summary(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": as_int(record.get("id")),
         "job_id": as_str(record.get("job_id")),
@@ -135,10 +193,10 @@ def _recovery_summary(row: Any) -> dict[str, Any]:
 
 
 async def _recoverable_jobs(limit: int, job_id: str | None) -> list[dict[str, Any]]:
-    database = database_module.get_admin_database()
     last_error: DatabaseError | None = None
     for columns in (EXTENDED_JOB_COLUMNS, LEGACY_JOB_COLUMNS):
         try:
+            database = _admin_database()
             query = database.table("chat_jobs").select(columns).in_(
                 "status", list(ACTIVE_STATUSES)
             )
@@ -147,33 +205,45 @@ async def _recoverable_jobs(limit: int, job_id: str | None) -> list[dict[str, An
             response = await (
                 query.order("updated_at", desc=False, nullsfirst=True).limit(limit).execute()
             )
+            rows = _database_rows(response, "A feladatok válasza hibás.")
+            return [_row_summary(row) for row in rows]
         except DatabaseError as exc:
-            if columns == EXTENDED_JOB_COLUMNS and _is_missing_column_error(exc):
+            if (
+                columns == EXTENDED_JOB_COLUMNS
+                and _is_missing_column_error(exc)
+                and not _is_missing_table_error(exc)
+            ):
                 last_error = exc
-                logger.warning(
-                    "system_jobs_legacy_columns", extra={"error": str(exc)}
-                )
+                logger.warning("system_jobs_legacy_columns", extra={"error": str(exc)})
                 continue
             raise
-        return [_row_summary(row) for row in response.rows]
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise DatabaseError("A feladatok lekérdezése nem sikerült.", 502) from exc
     if last_error is not None:
         raise last_error
-    raise DatabaseError("A feladatok lekérdezése nem sikerült.", 500)
+    raise DatabaseError("A feladatok lekérdezése nem sikerült.", 502)
 
 
 async def _recovery_rows(limit: int, job_id: str | None) -> list[dict[str, Any]]:
-    database = database_module.get_admin_database()
     try:
+        database = _admin_database()
         query = database.table(RECOVERY_TABLE).select(RECOVERY_COLUMNS)
         if job_id:
             query = query.eq("job_id", job_id)
         response = await query.order("id", desc=True).limit(limit).execute()
+        rows = _database_rows(response, "A helyreállítási napló válasza hibás.")
+        return [_recovery_summary(row) for row in rows]
     except DatabaseError as exc:
         if _is_missing_table_error(exc) or _is_missing_column_error(exc):
             logger.warning("system_recovery_log_unavailable", extra={"error": str(exc)})
             return []
         raise
-    return [_recovery_summary(row) for row in response.rows]
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        raise DatabaseError("A helyreállítási napló lekérdezése nem sikerült.", 502) from exc
 
 
 async def _queue_summary() -> dict[str, Any]:
@@ -186,7 +256,7 @@ async def _queue_summary() -> dict[str, Any]:
         return {"available": False}
     if not isinstance(summary, dict):
         return {"available": False}
-    return summary
+    return dict(summary)
 
 
 def _checkpoint_summary() -> dict[str, Any]:
@@ -197,7 +267,7 @@ def _checkpoint_summary() -> dict[str, Any]:
         return {"available": False}
     if not isinstance(stats, dict):
         return {"available": False}
-    return stats
+    return dict(stats)
 
 
 def _positive_limit(raw: str | None, fallback: int, ceiling: int) -> int:
@@ -284,7 +354,13 @@ async def post_system_heal(request: Request) -> Any:
         rate_limiter.check("heal", client_key(request))
         result = await heal_now()
         payload = result if isinstance(result, dict) else {}
-        healed = bool(payload.get("ok")) and not as_list(payload.get("errors"))
+        errors = as_list(payload.get("errors"))
+        if "healed" in payload:
+            healed = _bool(payload.get("healed")) and not errors
+        elif "ok" in payload:
+            healed = _bool(payload.get("ok")) and not errors
+        else:
+            healed = not errors
         return _json({"healed": healed, "result": payload})
     except RateLimitFault as exc:
         return _rate_limit_failure(exc)
