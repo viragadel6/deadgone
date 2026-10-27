@@ -344,7 +344,7 @@ class Sandbox:
                         "allow_http": False,
                         "allow_https": True,
                         "allow_package_managers": True,
-                        "allowed_domains": self._config.allowed_domains,
+                        "allowed_domains": list(self._config.allowed_domains),
                         "allowed_cidrs": [],
                     },
                 },
