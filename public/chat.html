@@ -329,6 +329,36 @@ textarea{ border-radius: 0; }
   flex: 1; overflow: hidden; position: relative; z-index: 1;
   touch-action: pan-y; display: flex; flex-direction: column; min-height: 0;
 }
+#image-drop-overlay{
+  position:absolute;
+  z-index:199;
+  inset:0;
+  display:grid;
+  place-items:center;
+  padding:24px;
+  pointer-events:none;
+  opacity:0;
+  visibility:hidden;
+  transition:opacity .16s ease,visibility .16s ease;
+}
+#image-drop-overlay.visible{ opacity:1; visibility:visible; }
+#image-drop-overlay .image-drop-card{
+  display:grid;
+  place-items:center;
+  width:min(100%,560px);
+  min-height:180px;
+  padding:24px;
+  border:1px solid var(--liquid-border-strong);
+  border-radius:24px;
+  color:var(--fg);
+  background:linear-gradient(145deg,var(--liquid2),var(--liquid3) 48%,var(--liquid));
+  box-shadow:0 .7px 0 var(--liquid-inset) inset,0 14px 42px var(--liquid-shadow);
+  -webkit-backdrop-filter:blur(36px) saturate(190%) contrast(1.08) brightness(1.04);
+  backdrop-filter:blur(36px) saturate(190%) contrast(1.08) brightness(1.04);
+  font-size:15px;
+  font-weight:600;
+  text-align:center;
+}
 #scroll-area{
   flex: 1; position: relative; top: 0; right: 0; bottom: 0; left: 0;
   overflow-y: auto; -webkit-overflow-scrolling: touch;
@@ -487,16 +517,16 @@ textarea{ border-radius: 0; }
 
 .ib-inner{ padding: 10px 12px; display: flex; flex-direction: column; gap: 7px; pointer-events: auto; background: transparent; }
 
-.img-strip{ display: flex; gap: 7px; overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 0 1px 1px; }
-.img-thumb{ position: relative; flex-shrink: 0; }
-.img-thumb img{ width: 50px; height: 50px; object-fit: cover; border-radius: 13px; }
+.img-strip{ display: flex; gap: 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 2px 1px 4px; }
+.img-thumb{ position: relative; display:flex; align-items:center; gap:8px; flex:0 0 auto; width:min(260px,75vw); min-width:0; min-height:48px; padding:5px 9px 5px 5px; border:.45px solid var(--liquid-border); border-radius:999px; color:var(--fg); background:linear-gradient(145deg,var(--liquid2),var(--liquid3) 48%,var(--liquid)); box-shadow:0 .7px 0 var(--liquid-inset) inset,0 14px 42px var(--liquid-shadow); -webkit-backdrop-filter:blur(36px) saturate(190%) contrast(1.08) brightness(1.04); backdrop-filter:blur(36px) saturate(190%) contrast(1.08) brightness(1.04); }
+.img-thumb img{ width:36px; height:36px; object-fit:cover; border-radius:50%; }
+.img-thumb-name{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; font-size:12px; }
 .img-rm{
-  position: absolute; top: -5px; right: -5px; width: 18px; height: 18px; border-radius: 50%;
-  background: rgba(5,12,8,.58); border: .45px solid var(--liquid-border-strong);
+  position:relative; flex:0 0 24px; width:24px; height:24px; border-radius:50%;
+  background:rgba(255,255,255,.08); border:0;
   display: flex; align-items: center; justify-content: center; font-size: 10px;
   color: var(--fg2);
-  -webkit-backdrop-filter: blur(22px) saturate(180%);
-  backdrop-filter: blur(22px) saturate(180%);
+  cursor:pointer;
 }
 .ib-row{ display: flex; align-items: flex-end; gap: 8px; }
 .attachment-action-wrap{ position: relative; flex: 0 0 36px; height: 36px; }
@@ -1198,8 +1228,9 @@ body{ position: fixed; inset: 0; }
 }
 
 .image-message-grid{
-  display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(168px,1fr));
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
   gap:9px;
   width:min(100%,620px);
   margin:4px 0 8px;
@@ -1207,17 +1238,49 @@ body{ position: fixed; inset: 0; }
 .image-message-grid.generated-image-grid{
   width:min(100%,720px);
 }
+.message-image-chip{
+  display:flex;
+  align-items:center;
+  gap:9px;
+  width:min(100%,330px);
+  min-width:0;
+  min-height:48px;
+  padding:5px 12px 5px 5px;
+  border:.45px solid var(--liquid-border);
+  border-radius:999px;
+  color:var(--fg);
+  background:linear-gradient(145deg,var(--liquid2),var(--liquid3) 48%,var(--liquid));
+  box-shadow:0 .7px 0 var(--liquid-inset) inset,0 14px 42px var(--liquid-shadow);
+  -webkit-backdrop-filter:blur(36px) saturate(190%) contrast(1.08) brightness(1.04);
+  backdrop-filter:blur(36px) saturate(190%) contrast(1.08) brightness(1.04);
+  text-align:left;
+  cursor:zoom-in;
+}
+.message-image-chip img{
+  display:block;
+  width:36px;
+  height:36px;
+  flex:0 0 36px;
+  border-radius:50%;
+  object-fit:cover;
+}
+.message-image-chip span{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
 .image-card{
+  position:relative;
+  width:100%;
   overflow:hidden;
-  border:1px solid rgba(255,255,255,.12);
+  border:.45px solid var(--liquid-border);
   border-radius:16px;
-  background:rgba(12,15,30,.62);
-  box-shadow:0 10px 30px rgba(0,0,0,.2);
+  background:linear-gradient(145deg,var(--liquid2),var(--liquid3) 48%,var(--liquid));
+  box-shadow:0 .7px 0 var(--liquid-inset) inset,0 14px 42px var(--liquid-shadow);
+  -webkit-backdrop-filter:blur(36px) saturate(190%) contrast(1.08) brightness(1.04);
+  backdrop-filter:blur(36px) saturate(190%) contrast(1.08) brightness(1.04);
 }
 .image-card.generated{
-  border-color:rgba(130,150,255,.34);
+  border-color:rgba(170,180,255,.28);
   background:linear-gradient(145deg,rgba(57,76,190,.25),rgba(12,15,30,.76));
 }
+.image-card-visual{ position:relative; }
 .image-preview{
   display:block;
   width:100%;
@@ -1229,8 +1292,10 @@ body{ position: fixed; inset: 0; }
 .image-preview img{
   display:block;
   width:100%;
-  aspect-ratio:1/1;
-  object-fit:cover;
+  height:auto;
+  max-height:min(80vh,900px);
+  aspect-ratio:auto;
+  object-fit:contain;
   background:rgba(255,255,255,.05);
 }
 .image-card-details{
@@ -1255,7 +1320,7 @@ body{ position: fixed; inset: 0; }
   align-items:center;
   justify-content:flex-end;
   gap:3px;
-  padding:0 6px 7px;
+  padding:7px 6px;
 }
 .image-card-action{
   min-height:28px;
@@ -1271,19 +1336,42 @@ body{ position: fixed; inset: 0; }
   color:var(--fg);
   background:rgba(255,255,255,.14);
 }
+.image-card-download{
+  position:absolute;
+  right:12px;
+  bottom:12px;
+  z-index:2;
+  min-width:36px;
+  min-height:36px;
+  padding:8px;
+  border:1px solid rgba(255,255,255,.22);
+  border-radius:12px;
+  color:#fff;
+  background:rgba(0,0,0,.62);
+  opacity:0;
+  transition:opacity .16s ease,background .16s ease;
+}
+.image-card-visual:hover .image-card-download,
+.image-card-visual:focus-within .image-card-download{ opacity:1; }
+.image-card-download svg{ display:block; width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+@media (hover:none){
+  .image-card-download{ opacity:1; }
+}
 .img-thumb-preview{
   display:block;
+  width:36px;
+  height:36px;
   padding:0;
   border:0;
-  border-radius:13px;
+  border-radius:50%;
   background:transparent;
   cursor:zoom-in;
 }
 .img-thumb-preview img{
   display:block;
-  width:50px;
-  height:50px;
-  border-radius:13px;
+  width:36px;
+  height:36px;
+  border-radius:50%;
   object-fit:cover;
 }
 .img-thumb-origin{
@@ -6206,6 +6294,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
   </div>
 
   <div id="content">
+    <div id="image-drop-overlay" aria-hidden="true"><div class="image-drop-card lg"><span>Engedd ide a képeket a csatoláshoz</span></div></div>
     <div id="scroll-area">
       <div id="msg-list" role="list"></div>
     </div>
@@ -6229,7 +6318,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
           <button type="button" class="image-flow-chip" id="image-flow-add-last">Legutóbbi eredmény</button>
           <button type="button" class="image-flow-chip" id="image-flow-clear-references">Referenciák törlése</button>
         </div>
-        <input id="image-flow-file" type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/heic,image/heif,image/gif">
+        <input id="image-flow-file" type="file" multiple hidden accept="image/jpeg,image/png,image/webp">
       </div>
       <div class="image-flow-option-grid">
         <div class="image-flow-field">
@@ -6238,7 +6327,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
         </div>
         <div class="image-flow-field">
           <label for="image-flow-resolution">Felbontás</label>
-          <select id="image-flow-resolution"></select>
+          <select id="image-flow-resolution" disabled aria-disabled="true"></select>
         </div>
         <div class="image-flow-field">
           <label for="image-flow-count">Képek száma</label>
@@ -6246,7 +6335,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
         </div>
         <div class="image-flow-field">
           <label for="image-flow-thinking">Gondolkodás</label>
-          <select id="image-flow-thinking"></select>
+          <select id="image-flow-thinking" disabled aria-disabled="true"></select>
         </div>
         <div class="image-flow-field">
           <label for="image-flow-safety">Biztonsági tűrés</label>
@@ -6270,7 +6359,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
         <div class="ib-row">
           <div class="attachment-action-wrap">
             <button class="ibtn lg" id="btn-gal" aria-label="Csatolási lehetőségek" aria-haspopup="menu" aria-expanded="false" aria-controls="attachment-popover" type="button" data-haptic="impact-light">
-              <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57a4 4 0 0 1 5.66 5.66L9.41 17.41a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+              <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
             </button>
           </div>
           <form class="ibox lg" onsubmit="event.preventDefault();">
@@ -6335,9 +6424,9 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     </div>
   </div>
 </div>
-<input type="file" id="fg" style="display:none" multiple accept="image/png,image/jpeg,image/webp,image/gif">
-<input type="file" id="fg-files" style="display:none" multiple accept="image/png,image/jpeg,image/webp,image/gif">
-<input type="file" id="fg-camera" style="display:none" accept="image/png,image/jpeg,image/webp,image/gif" capture="environment">
+<input type="file" id="fg" style="display:none" multiple accept="image/jpeg,image/png,image/webp">
+<input type="file" id="fg-files" style="display:none" multiple accept="image/jpeg,image/png,image/webp">
+<input type="file" id="fg-camera" style="display:none" accept="image/jpeg,image/png,image/webp" capture="environment">
 <div class="clipboard-preview-modal" id="clipboard-preview-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="clipboard-preview-title">
   <div class="clipboard-preview-backdrop" id="clipboard-preview-backdrop"></div>
   <section class="clipboard-preview-card" role="document">
@@ -6391,7 +6480,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
   var MAX_REFERENCE_IMAGES = 14;
   var MAX_IMAGES_PER_REQUEST = 10;
   var MAX_REFERENCE_IMAGE_BYTES = 10 * 1000 * 1000;
-  var REFERENCE_IMAGE_MIME_TYPES = {"image/png":true, "image/jpeg":true, "image/webp":true, "image/gif":true, "image/heic":true, "image/heif":true};
+  var REFERENCE_IMAGE_MIME_TYPES = {"image/png":true, "image/jpeg":true, "image/webp":true};
   var ASPECT_RATIO_LABELS = {
     "auto":"Automatikus",
     "1:1":"Négyzet (1:1)",
@@ -6417,7 +6506,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     resolutions:["1K","2K","4K"],
     thinking_levels:["minimal","medium","high"],
     safety_tolerances:["1","2","3","4","5","6"],
-    defaults:{aspect_ratio:"auto", resolution:"1K", num_images:1, thinking_level:"medium", enable_web_search:false, safety_tolerance:"4"},
+    defaults:{aspect_ratio:"auto", resolution:"4K", num_images:1, thinking_level:"high", enable_web_search:false, safety_tolerance:"4"},
     limits:{max_reference_images:14, max_images:10, async_num_images_threshold:4},
     remote_link_hours:24
   };
@@ -6425,7 +6514,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
   var IMAGE_STORAGE_STORE = "assets";
   var MAX_IMAGE_ATTACHMENT_COUNT = 8;
   var MAX_IMAGE_ATTACHMENT_BYTES = 12 * 1000 * 1000;
-  var SUPPORTED_IMAGE_MIME_TYPES = {"image/png":true, "image/jpeg":true, "image/webp":true, "image/gif":true};
+  var SUPPORTED_IMAGE_MIME_TYPES = {"image/png":true, "image/jpeg":true, "image/webp":true};
   var messages = [];
   var busy = false;
   var abortController = null;
@@ -6709,15 +6798,19 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     return {text:textParts.join("\n"), images:images, textFiles:textFiles};
   }
 
-  function renderMessageImages(images, messageIndex, generated){
+  function renderMessageImages(images, messageIndex, generated, compact){
     if(!images || !images.length) return "";
     return '<div class="image-message-grid' + (generated ? ' generated-image-grid' : '') + '">' + images.map(function(image, index){
       var isGenerated = !!(generated || image.generated);
       var label = image.name || (isGenerated ? "Generált kép" : "Csatolt kép");
-      return '<div class="image-card' + (isGenerated ? ' generated' : '') + '">' +
-        '<button type="button" class="image-preview" data-image-preview="true" data-image-message-index="' + messageIndex + '" data-image-index="' + index + '" aria-label="Kép teljes méretben"><img src="' + escapeAttr(image.thumbnailUrl || image.url) + '" alt="' + escapeAttr(image.alt || label) + '" loading="lazy"></button>' +
+      if(compact){
+        return '<button type="button" class="message-image-chip lg" data-image-preview="true" data-image-message-index="' + messageIndex + '" data-image-index="' + index + '" aria-label="Csatolt kép megnyitása: ' + escapeAttr(label) + '"><img src="' + escapeAttr(image.thumbnailUrl || image.url) + '" alt=""><span>' + escapeHtml(label) + '</span></button>';
+      }
+      return '<div class="image-card lg' + (isGenerated ? ' generated' : '') + '"><div class="image-card-visual">' +
+        '<button type="button" class="image-preview" data-image-preview="true" data-image-message-index="' + messageIndex + '" data-image-index="' + index + '" aria-label="Kép teljes méretben"><img src="' + escapeAttr(image.url || image.thumbnailUrl) + '" alt="' + escapeAttr(image.alt || label) + '" loading="lazy"></button>' +
+        '<button type="button" class="image-card-action image-card-download" data-image-action="download" data-image-message-index="' + messageIndex + '" data-image-index="' + index + '" aria-label="Kép letöltése" title="Letöltés"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 20h14"/></svg></button></div>' +
         '<div class="image-card-details"><span class="image-card-label' + (isGenerated ? ' generated-label' : '') + '">' + escapeHtml(label) + '</span></div>' +
-        '<div class="image-card-actions"><button type="button" class="image-card-action" data-image-action="use" data-image-message-index="' + messageIndex + '" data-image-index="' + index + '">Felhasználás</button><button type="button" class="image-card-action" data-image-action="edit" data-image-message-index="' + messageIndex + '" data-image-index="' + index + '">Szerkesztés</button><button type="button" class="image-card-action" data-image-action="download" data-image-message-index="' + messageIndex + '" data-image-index="' + index + '">Letöltés</button></div>' +
+        '<div class="image-card-actions"><button type="button" class="image-card-action" data-image-action="use" data-image-message-index="' + messageIndex + '" data-image-index="' + index + '">Felhasználás</button><button type="button" class="image-card-action" data-image-action="edit" data-image-message-index="' + messageIndex + '" data-image-index="' + index + '">Szerkesztés</button></div>' +
       '</div>';
     }).join("") + '</div>';
   }
@@ -7079,7 +7172,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
       var branchNav = branchNavHtml(messageIndex);
       if(user){
         var textBubble = display.text ? '<div class="bubble lg user-message-collapsible"><div class="user-message-text">' + markdown(display.text) + '</div><button type="button" class="user-message-expand" data-expand-index="' + messageIndex + '">Teljes üzenet</button></div>' : '';
-        return '<div class="msg-group u" role="listitem">' + renderMessageImages(display.images, messageIndex, false) + renderTextFiles(display.textFiles, messageIndex) + textBubble + '<div class="msg-actions"><button type="button" class="msg-edit" data-edit-index="' + messageIndex + '">Szerkesztés</button></div>' + branchNav + '</div>';
+        return '<div class="msg-group u" role="listitem">' + renderMessageImages(display.images, messageIndex, false, true) + renderTextFiles(display.textFiles, messageIndex) + textBubble + '<div class="msg-actions"><button type="button" class="msg-edit" data-edit-index="' + messageIndex + '">Szerkesztés</button></div>' + branchNav + '</div>';
       }
       var thinking = parsed.thinking;
       var cotTools = renderCotTools(message);
@@ -7344,7 +7437,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
   }
 
   function createDescriptorFromFile(file){
-    if(!file || !SUPPORTED_IMAGE_MIME_TYPES[String(file.type || "").toLowerCase()]) return Promise.reject(new Error("Csak PNG, JPEG, WebP vagy GIF képfájl csatolható."));
+    if(!file || !SUPPORTED_IMAGE_MIME_TYPES[String(file.type || "").toLowerCase()]) return Promise.reject(new Error("Csak PNG, JPEG vagy WebP képfájl csatolható."));
     if(file.size > MAX_IMAGE_ATTACHMENT_BYTES) return Promise.reject(new Error("Egy kép legfeljebb 12 MB lehet."));
     return readBlobAsDataUrl(file).then(function(dataUrl){
       return persistImageDescriptor(createImageDescriptor(dataUrl, {
@@ -7556,9 +7649,13 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     var counts = [];
     for(var index = 1; index <= maxImages; index++) counts.push({value:String(index), label:index === 1 ? "1 kép" : index + " kép"});
     fillImageFlowSelect("image-flow-ratio", (options.aspect_ratios || []).map(function(value){ return {value:value, label:ASPECT_RATIO_LABELS[value] || value}; }), defaults.aspect_ratio);
-    fillImageFlowSelect("image-flow-resolution", (options.resolutions || []).map(function(value){ return {value:value, label:RESOLUTION_LABELS[value] || value}; }), defaults.resolution);
+    fillImageFlowSelect("image-flow-resolution", [{value:"4K", label:RESOLUTION_LABELS["4K"]}], "4K");
     fillImageFlowSelect("image-flow-count", counts, String(defaults.num_images || 1));
-    fillImageFlowSelect("image-flow-thinking", (options.thinking_levels || []).map(function(value){ return {value:value, label:THINKING_LABELS[value] || value}; }), defaults.thinking_level);
+    fillImageFlowSelect("image-flow-thinking", [{value:"high", label:THINKING_LABELS.high}], "high");
+    var resolution = document.getElementById("image-flow-resolution");
+    var thinking = document.getElementById("image-flow-thinking");
+    if(resolution){ resolution.disabled = true; resolution.setAttribute("aria-disabled", "true"); }
+    if(thinking){ thinking.disabled = true; thinking.setAttribute("aria-disabled", "true"); }
     fillImageFlowSelect("image-flow-safety", (options.safety_tolerances || []).map(function(value){ return {value:value, label:SAFETY_LABELS[value] || value}; }), String(defaults.safety_tolerance || "4"));
     var webSearch = document.getElementById("image-flow-websearch");
     if(webSearch) webSearch.checked = !!defaults.enable_web_search;
@@ -7567,16 +7664,19 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
   function readImageFlowSettings(){
     try{
       var raw = window.localStorage.getItem(IMAGE_FLOW_SETTINGS_KEY);
-      if(!raw) return {};
+      if(!raw) return {resolution:"4K", thinking_level:"high"};
       var parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" ? parsed : {};
+      return parsed && typeof parsed === "object"
+        ? Object.assign({}, parsed, {resolution:"4K", thinking_level:"high"})
+        : {resolution:"4K", thinking_level:"high"};
     }catch(error){
-      return {};
+      return {resolution:"4K", thinking_level:"high"};
     }
   }
 
   function saveImageFlowSettings(settings){
-    try{ window.localStorage.setItem(IMAGE_FLOW_SETTINGS_KEY, JSON.stringify(settings || {})); }catch(error){}
+    var fixed = Object.assign({}, settings || {}, {resolution:"4K", thinking_level:"high"});
+    try{ window.localStorage.setItem(IMAGE_FLOW_SETTINGS_KEY, JSON.stringify(fixed)); }catch(error){}
   }
 
   function currentImageFlowSettings(){
@@ -7584,9 +7684,9 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     var defaults = imageOptions().defaults || {};
     var settings = {
       aspect_ratio: selectValue("image-flow-ratio", defaults.aspect_ratio || "auto"),
-      resolution: selectValue("image-flow-resolution", defaults.resolution || "1K"),
+      resolution: "4K",
       num_images: Number(selectValue("image-flow-count", String(defaults.num_images || 1))) || 1,
-      thinking_level: selectValue("image-flow-thinking", defaults.thinking_level || "medium"),
+      thinking_level: "high",
       safety_tolerance: selectValue("image-flow-safety", String(defaults.safety_tolerance || "4")),
       enable_web_search: !!(webSearch && webSearch.checked)
     };
@@ -7599,9 +7699,9 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     var values = settings || {};
     var defaults = imageOptions().defaults || {};
     setSelectValue("image-flow-ratio", values.aspect_ratio || defaults.aspect_ratio);
-    setSelectValue("image-flow-resolution", values.resolution || defaults.resolution);
+    setSelectValue("image-flow-resolution", "4K");
     setSelectValue("image-flow-count", String(values.num_images || defaults.num_images || 1));
-    setSelectValue("image-flow-thinking", values.thinking_level || defaults.thinking_level);
+    setSelectValue("image-flow-thinking", "high");
     setSelectValue("image-flow-safety", String(values.safety_tolerance || defaults.safety_tolerance || "4"));
     var webSearch = document.getElementById("image-flow-websearch");
     if(webSearch) webSearch.checked = values.enable_web_search === undefined ? !!defaults.enable_web_search : !!values.enable_web_search;
@@ -7841,23 +7941,24 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     }
   }
 
-  function submitImageFlow(){
-    if(imageRequestInProgress) return;
-    var promptInput = document.getElementById("image-flow-prompt");
-    var prompt = promptInput ? promptInput.value.trim() : "";
-    var references = imageFlowReferences().slice();
-    if(!prompt){
-      toast(references.length ? "Adj meg szerkesztési utasítást." : "Adj meg képgenerálási leírást.", "err");
-      if(promptInput) promptInput.focus();
-      return;
+  function runImageRequest(prompt, references, settings, options){
+    var requestOptions = options || {};
+    var includedReferences = references.slice();
+    var mode = includedReferences.length ? "edit" : "generate";
+    if(requestOptions.addUserMessage){
+      messages.push({role:"user", content:imageContentFromDescriptors(prompt, includedReferences)});
+      if(requestOptions.clearComposer){
+        textarea.value = "";
+        textarea.style.height = "auto";
+        textarea.classList.remove("large-paste-expanded");
+        textarea.closest(".ibox").classList.remove("large-paste-expanded");
+        selectedImages = [];
+        selectedTextFiles = [];
+        updateImgStrip();
+        textarea.dispatchEvent(new Event("input", {bubbles:true}));
+      }
+      persistCurrent();
     }
-    if(references.length > imageReferenceLimit()){
-      toast("Legfeljebb " + imageReferenceLimit() + " referencia kép használható.", "err");
-      return;
-    }
-    var settings = currentImageFlowSettings();
-    saveImageFlowSettings(settings);
-    var mode = references.length ? "edit" : "generate";
     imageRequestInProgress = true;
     setImageFlowBusy(true);
     var pendingMessage = {role:"assistant", content:"", isImageRequest:true, imageRequestPending:true, imageOperation:mode, createdAt:Date.now()};
@@ -7865,7 +7966,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     render();
     imageRequestController = typeof AbortController === "function" ? new AbortController() : null;
     var startedAt = Date.now();
-    requestImages(prompt, references, settings).then(function(payload){
+    requestImages(prompt, includedReferences, settings).then(function(payload){
       var warnings = payload && Array.isArray(payload.warnings) ? payload.warnings.filter(function(item){ return typeof item === "string" && item; }) : [];
       return extractGeneratedImageDescriptors(payload).then(function(descriptors){
         return {descriptors:descriptors, payload:payload, warnings:warnings};
@@ -7883,7 +7984,8 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
       imageEditChain = result.descriptors.slice();
       persistCurrent();
       render();
-      closeImageFlow(true);
+      var panel = document.getElementById("image-flow-panel");
+      if(panel && !panel.hidden) closeImageFlow(true);
       var seconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
       toast("A kép elkészült (" + seconds + " mp)", "ok");
       result.warnings.slice(0, 2).forEach(function(warning){ toast(warning, "inf"); });
@@ -7892,6 +7994,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
       var index = messages.indexOf(pendingMessage);
       if(index !== -1) messages.splice(index, 1);
       render();
+      persistCurrent();
       if(error && (error.name === "AbortError" || error.message === "A képkérés megszakadt.")){
         toast("A képkérés megszakadt.", "inf");
         return;
@@ -7903,6 +8006,25 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
       setImageFlowBusy(false);
       updateImageFlowReferenceButtons();
     });
+  }
+
+  function submitImageFlow(){
+    if(imageRequestInProgress) return;
+    var promptInput = document.getElementById("image-flow-prompt");
+    var prompt = promptInput ? promptInput.value.trim() : "";
+    var references = imageFlowReferences().slice();
+    if(!prompt){
+      toast(references.length ? "Adj meg szerkesztési utasítást." : "Adj meg képgenerálási leírást.", "err");
+      if(promptInput) promptInput.focus();
+      return;
+    }
+    if(references.length > imageReferenceLimit()){
+      toast("Legfeljebb " + imageReferenceLimit() + " referencia kép használható.", "err");
+      return;
+    }
+    var settings = currentImageFlowSettings();
+    saveImageFlowSettings(settings);
+    runImageRequest(prompt, references, settings, {addUserMessage:true});
   }
 
   function cancelImageFlow(){
@@ -8569,9 +8691,9 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     strip.style.display = "flex";
     var imageMarkup = selectedImages.map(function(image, index){
       var descriptor = createImageDescriptor(image.url, image);
-      return '<div class="img-thumb">' +
-        '<button type="button" class="img-thumb-preview" data-selected-image-preview="' + index + '" aria-label="Csatolt kép megnyitása"><img src="' + escapeAttr(descriptor.thumbnailUrl || descriptor.url) + '" alt="' + escapeAttr(descriptor.alt || descriptor.name || "Csatolt kép") + '"></button>' +
-        '<span class="img-thumb-origin">' + (descriptor.generated ? "AI" : "Kép") + '</span>' +
+      return '<div class="img-thumb lg">' +
+        '<button type="button" class="img-thumb-preview" data-selected-image-preview="' + index + '" aria-label="Csatolt kép megnyitása"><img src="' + escapeAttr(descriptor.thumbnailUrl || descriptor.url) + '" alt=""></button>' +
+        '<span class="img-thumb-name" title="' + escapeAttr(descriptor.name || "Kép") + '">' + escapeHtml(descriptor.name || "Kép") + '</span>' +
         '<button type="button" class="img-rm" data-selected-image-remove="' + index + '" aria-label="Eltávolítás">×</button>' +
       '</div>';
     }).join("");
@@ -8906,6 +9028,14 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     }
     var text = textarea.value.trim();
     if(!text && !selectedImages.length && !selectedTextFiles.length) return;
+    if(text && selectedImages.length && !selectedTextFiles.length){
+      var editReferences = selectedImages.slice(0, imageReferenceLimit());
+      var editSettings = currentImageFlowSettings();
+      editSettings.num_images = 1;
+      saveImageFlowSettings(editSettings);
+      runImageRequest(text, editReferences, editSettings, {addUserMessage:true, clearComposer:true});
+      return;
+    }
       var content = addImageParts(text || (selectedImages.length ? "Elemezd a csatolt képet." : ""));
     messages.push({role:"user", content:content});
     persistCurrent();
@@ -9156,7 +9286,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     var inputFiles = Array.prototype.slice.call(files || []);
     if(!inputFiles.length) return Promise.resolve();
     var imageFiles = inputFiles.filter(function(file){ return file && SUPPORTED_IMAGE_MIME_TYPES[String(file.type || "").toLowerCase()]; });
-    if(inputFiles.length > imageFiles.length) toast("Csak PNG, JPEG, WebP vagy GIF képfájl csatolható.", "inf");
+    if(inputFiles.length > imageFiles.length) toast("Csak PNG, JPEG vagy WebP képfájl csatolható.", "inf");
     var remaining = Math.max(0, MAX_IMAGE_ATTACHMENT_COUNT - selectedImages.length);
     if(!remaining){ toast("Legfeljebb " + MAX_IMAGE_ATTACHMENT_COUNT + " kép csatolható.", "err"); return Promise.resolve(); }
     if(imageFiles.length > remaining){
@@ -9186,17 +9316,49 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     }
   });
 
-  [textarea, document.getElementById("ib-wrap")].forEach(function(target){
-    if(!target) return;
-    target.addEventListener("dragover", function(event){
-      if(event.dataTransfer && Array.prototype.some.call(event.dataTransfer.types || [], function(type){ return type === "Files"; })){ event.preventDefault(); }
+  var dropSurface = document.getElementById("content");
+  var dropOverlay = document.getElementById("image-drop-overlay");
+  function isFileDrag(event){
+    return !!(event.dataTransfer && Array.prototype.some.call(event.dataTransfer.types || [], function(type){ return type === "Files"; }));
+  }
+  function hideImageDropOverlay(){
+    if(dropOverlay){
+      dropOverlay.classList.remove("visible");
+      dropOverlay.setAttribute("aria-hidden", "true");
+    }
+  }
+  if(dropSurface){
+    dropSurface.addEventListener("dragenter", function(event){
+      if(!isFileDrag(event)) return;
+      event.preventDefault();
+      if(dropOverlay){
+        dropOverlay.classList.add("visible");
+        dropOverlay.setAttribute("aria-hidden", "false");
+      }
     });
-    target.addEventListener("drop", function(event){
+    dropSurface.addEventListener("dragover", function(event){
+      if(!isFileDrag(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      if(dropOverlay){
+        dropOverlay.classList.add("visible");
+        dropOverlay.setAttribute("aria-hidden", "false");
+      }
+    });
+    dropSurface.addEventListener("dragleave", function(event){
+      var next = document.elementFromPoint(event.clientX, event.clientY);
+      if(!next || !dropSurface.contains(next)) hideImageDropOverlay();
+    });
+    dropSurface.addEventListener("drop", function(event){
       if(!event.dataTransfer || !event.dataTransfer.files || !event.dataTransfer.files.length) return;
       event.preventDefault();
+      event.stopPropagation();
+      hideImageDropOverlay();
       addSelectedImageFiles(event.dataTransfer.files).catch(function(){ toast("Képolvasási hiba", "err"); });
     });
-  });
+  }
+  document.addEventListener("dragend", hideImageDropOverlay);
+  window.addEventListener("blur", hideImageDropOverlay);
   window.handleLargeClipboardChoice = function(choice, clipboardText){
     var content = String(clipboardText == null ? "" : clipboardText);
     if(choice === "file"){

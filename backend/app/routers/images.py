@@ -48,8 +48,6 @@ ASPECT_RATIOS: tuple[str, ...] = (
     "1:8",
     "8:1",
 )
-RESOLUTIONS: tuple[str, ...] = ("1K", "2K", "4K")
-THINKING_LEVELS: tuple[str, ...] = ("minimal", "medium", "high")
 SAFETY_TOLERANCES: tuple[str, ...] = ("1", "2", "3", "4", "5", "6")
 REFERENCE_MIME_TYPES: tuple[str, ...] = (
     "image/png",
@@ -61,9 +59,9 @@ REFERENCE_MIME_TYPES: tuple[str, ...] = (
 )
 
 DEFAULT_ASPECT_RATIO = "auto"
-DEFAULT_RESOLUTION = "1K"
+DEFAULT_RESOLUTION = "4K"
 DEFAULT_NUM_IMAGES = 1
-DEFAULT_THINKING_LEVEL = "medium"
+DEFAULT_THINKING_LEVEL = "high"
 DEFAULT_SAFETY_TOLERANCE = "4"
 DEFAULT_ENABLE_WEB_SEARCH = False
 
@@ -120,14 +118,6 @@ LEGACY_SIZES = {
     "1024x1536": "2:3",
     "1792x1024": "16:9",
     "1024x1792": "9:16",
-}
-LEGACY_QUALITIES = {
-    "low": "minimal",
-    "auto": "medium",
-    "medium": "medium",
-    "high": "high",
-    "xhigh": "high",
-    "max": "high",
 }
 TRUTHY_VALUES = frozenset({"1", "true", "yes", "on", "igen"})
 FALSY_VALUES = frozenset({"0", "false", "no", "off", "nem", ""})
@@ -641,7 +631,6 @@ class ImageOptions:
 
 def _options_from(values: dict[str, Any]) -> ImageOptions:
     legacy_ratio = LEGACY_SIZES.get(_text_value(values.get("size")).lower(), "")
-    legacy_level = LEGACY_QUALITIES.get(_text_value(values.get("quality")).lower(), "")
     web_search = values.get("enable_web_search")
     if web_search is None:
         web_search = values.get("web_search")
@@ -652,18 +641,11 @@ def _options_from(values: dict[str, Any]) -> ImageOptions:
             legacy_ratio or DEFAULT_ASPECT_RATIO,
             "képarány",
         ),
-        resolution=_validated_choice(
-            values.get("resolution"), RESOLUTIONS, DEFAULT_RESOLUTION, "felbontás"
-        ),
+        resolution=DEFAULT_RESOLUTION,
         num_images=_validated_count(
             values.get("num_images"), DEFAULT_NUM_IMAGES, "képek száma"
         ),
-        thinking_level=_validated_choice(
-            values.get("thinking_level"),
-            THINKING_LEVELS,
-            legacy_level or DEFAULT_THINKING_LEVEL,
-            "gondolkodási szint",
-        ),
+        thinking_level=DEFAULT_THINKING_LEVEL,
         enable_web_search=_validated_flag(
             web_search, DEFAULT_ENABLE_WEB_SEARCH, "webes keresés"
         ),
@@ -1364,8 +1346,8 @@ def _options_payload() -> dict[str, Any]:
     return {
         "model": _model_name(),
         "aspect_ratios": list(ASPECT_RATIOS),
-        "resolutions": list(RESOLUTIONS),
-        "thinking_levels": list(THINKING_LEVELS),
+        "resolutions": [DEFAULT_RESOLUTION],
+        "thinking_levels": [DEFAULT_THINKING_LEVEL],
         "safety_tolerances": list(SAFETY_TOLERANCES),
         "reference_types": list(REFERENCE_MIME_TYPES),
         "defaults": {
