@@ -1238,7 +1238,7 @@ class AgentRuntime:
                     "sandbox_close_failed", extra={"job_id": self.task_id, "error": str(exc)}
                 )
         self.sandbox = Sandbox(
-            self.config.insta_key,
+            self.config.insta_key.get_secret_value(),
             self.config,
             self.cancel,
             self.deadline,
@@ -1953,7 +1953,7 @@ class AgentRuntime:
         settings = get_settings()
         if self.config.insta_key is not None:
             self.sandbox = Sandbox(
-                self.config.insta_key,
+                self.config.insta_key.get_secret_value(),
                 self.config,
                 self.cancel,
                 self.deadline,
