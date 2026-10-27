@@ -4,6 +4,7 @@
   if(!content)return;
   var viewer=document.createElement("section");
   viewer.id="browser-view";
+  viewer.hidden=true;
   viewer.setAttribute("aria-label","Virtuális böngésző");
   viewer.innerHTML='<div id="browser-toolbar"><button id="browser-toggle" type="button" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>Böngésző</button><span id="browser-state"></span><select id="browser-tabs" aria-label="Böngésző kiválasztása" hidden></select></div><div id="browser-stage" hidden><canvas id="browser-canvas" width="1280" height="1029" tabindex="0" aria-label="Élő felhőböngésző"></canvas><button id="browser-control" type="button">Irányítás átvétele</button></div><div id="browser-empty" hidden>Nincs aktív felhőböngésző.</div>';
   content.insertBefore(viewer,content.firstChild);
@@ -18,7 +19,7 @@
   else content.appendChild(status);
   var stage=document.getElementById("browser-stage"),canvas=document.getElementById("browser-canvas"),control=document.getElementById("browser-control"),state=document.getElementById("browser-state"),toggle=document.getElementById("browser-toggle"),tabs=document.getElementById("browser-tabs"),empty=document.getElementById("browser-empty");
   var drawing=canvas.getContext("2d");
-  var session=null,conversation=undefined,opened=false,mode="agent",lastStatus=null,activeFrames=0,generation=0,frameSeq=0,inputQueue=Promise.resolve(),progressJob=null,controlPending=false,discovering=false,manualSelection=false;
+  var session=null,conversation=undefined,opened=false,activeSession=false,mode="agent",lastStatus=null,activeFrames=0,generation=0,frameSeq=0,inputQueue=Promise.resolve(),progressJob=null,controlPending=false,discovering=false,manualSelection=false;
   var mobileInput=null,typeButton=null;
   var clickState={time:0,count:0,x:0,y:0};
   var remembered=null;
@@ -49,18 +50,26 @@
         var result=parsed.result&&typeof parsed.result==="object"?parsed.result:parsed;
         if(result&&typeof result.viewer_id==="string"&&result.viewer_id){
           selectSession(result.viewer_id);
+          activeSession=true;
           opened=true;
           manualSelection=false;
           show();
         }
       }
     }
+    if(event.type==="agent_event"&&event.event&&event.event.type==="tool_result"&&event.event.tool==="cloud_browser_stop"){
+      activeSession=false;
+      opened=false;
+      selectSession(null);
+      show();
+    }
   }
   window.chatWorkEvent=work;
   function show(){
+    viewer.hidden=!activeSession;
     toggle.setAttribute("aria-expanded",String(opened));
-    stage.hidden=!opened||!session;
-    empty.hidden=!opened||!!session;
+    stage.hidden=!opened||!session||!activeSession;
+    empty.hidden=!opened||!!session||!activeSession;
   }
   function applyMode(){
     var human=mode==="human";
@@ -90,7 +99,10 @@
       mobileInput.value="";
     }
     if(typeButton)typeButton.setAttribute("aria-pressed","false");
-    if(!id)opened=false;
+    if(!id){
+      opened=false;
+      activeSession=false;
+    }
     state.textContent=id?"Kapcsolódás…":"";
     control.disabled=true;
     control.textContent="Irányítás átvétele";
@@ -98,7 +110,7 @@
     show();
   }
   toggle.addEventListener("click",function(){opened=!opened;show();});
-  tabs.addEventListener("change",function(){manualSelection=true;selectSession(tabs.value);opened=true;show();});
+  tabs.addEventListener("change",function(){manualSelection=true;selectSession(tabs.value);activeSession=true;opened=true;show();});
   function readToken(){
     try{
       if(typeof window.chatAccessToken==="string"&&window.chatAccessToken)return window.chatAccessToken;
@@ -190,25 +202,28 @@
         for(var item=0;item<raw.length;item++)if(raw[item]&&typeof raw[item].id==="string")sessions.push(raw[item]);
       }
       tabs.replaceChildren();
-      sessions.forEach(function(entry,index){
+       sessions.filter(function(entry){return entry.status==="active";}).forEach(function(entry,index){
         var option=document.createElement("option");
-        option.value=entry.id;
-        option.textContent="Böngésző "+(index+1)+(entry.status==="active"?"":" · leállt");
+         option.value=entry.id;
+         option.textContent="Böngésző "+(index+1);
         tabs.appendChild(option);
       });
-      tabs.hidden=sessions.length<2;
+       var activeSessions=sessions.filter(function(entry){return entry.status==="active";});
+       tabs.hidden=activeSessions.length<2;
       var active=null;
-      for(var candidate=0;candidate<sessions.length;candidate++){
-        if(sessions[candidate].status==="active"){active=sessions[candidate];break;}
-      }
+       if(activeSessions.length)active=activeSessions[0];
       var current=findSession(sessions,session);
-      if(!current){
-        var selected=active||sessions[0]||null;
-        selectSession(selected?selected.id:null);
-        if(selected&&selected.status==="active"){opened=true;}
-      }else if(!manualSelection&&current.status!=="active"&&active){
-        selectSession(active.id);
-        opened=true;
+       if(!active){
+         activeSession=false;
+         opened=false;
+         if(session)selectSession(null);
+       }else if(!current||current.status!=="active"){
+         selectSession(active.id);
+         activeSession=true;
+         opened=true;
+         manualSelection=false;
+       }else{
+         activeSession=true;
       }
       if(!session)opened=false;
       if(session&&tabs.value!==session)tabs.value=session;

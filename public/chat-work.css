@@ -4,6 +4,7 @@
 #work-progress-text{flex:1;min-width:0;overflow-wrap:anywhere}
 #work-progress-time{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--fg3)}
 #browser-view{flex:none;border-bottom:1px solid var(--sep);background:var(--bg);max-height:66%;overflow:auto}
+#browser-view[hidden]{display:none!important}
 #browser-toolbar{display:flex;align-items:center;gap:8px;padding:8px 12px;min-height:40px}
 #browser-toolbar button,#browser-control{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--liquid-border-strong);border-radius:8px;padding:8px 12px;cursor:pointer}
 #browser-toggle{display:flex;align-items:center;gap:8px}
