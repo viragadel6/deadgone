@@ -91,7 +91,7 @@ PHASE_ACTIVITIES = {
     "osAct": "Dolgozom a kéréseden.",
     "osValidate": "Ellenőrzöm az elkészült eredményt.",
     "osReflect": "Megvizsgálom az elakadást és a javítás lehetőségét.",
-    "osConsolidate": "Lezárom a munkát és elmentem a tapasztalatokat.",
+    "osConsolidate": "Lezárom a feladatot.",
 }
 RESTART_SEPARATOR = "\n\n── A modell adatfolyama megszakadt, a gondolatmenet folytatódik ──\n\n"
 MODEL_RETRY_CODES = frozenset(
@@ -1498,7 +1498,6 @@ class AgentRuntime:
                 raise AgentFault("EMPTY_ANSWER", "A modell nem adott befejező választ.", 502)
             self.reset_step()
             await self.apply_deliberation(True)
-            await self.lifecycle.to("osValidate")
             verification_required = bool(
                 self.sigma.goal.state_pointers
                 or self.sigma.goal.required_files
@@ -1508,18 +1507,17 @@ class AgentRuntime:
                 or self.sigma.blockers
                 or self.sigma.subgoals
             )
-            check = (
-                await cog.verify(self.sigma, self._probe)
-                if verification_required
-                else {"ok": True, "failures": []}
-            )
             if verification_required:
+                await self.lifecycle.to("osValidate")
+                check = await cog.verify(self.sigma, self._probe)
                 await self.note(
                     "ellenőrzés",
                     "Minden célfeltétel teljesült."
                     if check["ok"]
                     else "\n".join(check["failures"]),
                 )
+            else:
+                check = {"ok": True, "failures": []}
             if check["ok"]:
                 await self.send(
                     {
@@ -2168,46 +2166,51 @@ class AgentRuntime:
                     if outcome == TerminalState.COMPLETED:
                         outcome = TerminalState.FAILED
                         reason = "A VM felszabadítása nem sikerült."
-            if not self.cancel.is_set() and self.cognition_requested:
-                try:
-                    if self.lifecycle.phase != "osConsolidate":
-                        await self.lifecycle.to("osConsolidate")
-                    consolidation_deadline = time.monotonic() + CONSOLIDATION_TIMEOUT_MS / 1000
-                    consolidation_think = await self.make_think(
-                        self.cancel, True, consolidation_deadline
-                    )
-                    await cog.consolidate(
-                        consolidation_think,
-                        {
-                            "taskId": self.task_id,
-                            "objective": self.objective,
-                            "outcome": outcome.value,
-                            "steps": self.steps,
-                            "verified": self.verified,
-                            "reflections": [
-                                {
-                                    "failure_point": item.failure_point,
-                                    "component": item.component,
-                                    "root_cause": item.root_cause,
-                                    "pivot_action": item.pivot_action,
-                                    "patch": item.patch,
-                                    "failed_action": item.failed_action,
-                                    "corrective_action": item.corrective_action,
-                                }
-                                for item in self.reflections
-                            ],
-                            "usedSkills": [
-                                str(skill.get("id")) for skill in (retrieved.get("skills") or [])
-                            ],
-                        },
-                        lambda text: self.note("konszolidáció", text),
-                    )
-                except asyncio.CancelledError as exc:
-                    cancellation_error = cancellation_error or exc
-                except Exception as exc:
-                    logger.warning(
-                        "consolidation_failed", extra={"job_id": self.task_id, "error": str(exc)}
-                    )
+            if not self.cancel.is_set():
+                if self.cognition_requested:
+                    try:
+                        if self.lifecycle.phase != "osConsolidate":
+                            await self.lifecycle.to("osConsolidate")
+                        consolidation_deadline = (
+                            time.monotonic() + CONSOLIDATION_TIMEOUT_MS / 1000
+                        )
+                        consolidation_think = await self.make_think(
+                            self.cancel, True, consolidation_deadline
+                        )
+                        await cog.consolidate(
+                            consolidation_think,
+                            {
+                                "taskId": self.task_id,
+                                "objective": self.objective,
+                                "outcome": outcome.value,
+                                "steps": self.steps,
+                                "verified": self.verified,
+                                "reflections": [
+                                    {
+                                        "failure_point": item.failure_point,
+                                        "component": item.component,
+                                        "root_cause": item.root_cause,
+                                        "pivot_action": item.pivot_action,
+                                        "patch": item.patch,
+                                        "failed_action": item.failed_action,
+                                        "corrective_action": item.corrective_action,
+                                    }
+                                    for item in self.reflections
+                                ],
+                                "usedSkills": [
+                                    str(skill.get("id"))
+                                    for skill in (retrieved.get("skills") or [])
+                                ],
+                            },
+                            lambda text: self.note("konszolidáció", text),
+                        )
+                    except asyncio.CancelledError as exc:
+                        cancellation_error = cancellation_error or exc
+                    except Exception as exc:
+                        logger.warning(
+                            "consolidation_failed",
+                            extra={"job_id": self.task_id, "error": str(exc)},
+                        )
                 await self.send(
                     {
                         "type": "terminal",

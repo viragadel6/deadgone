@@ -1,1 +1,2 @@
 - [Supabase migration target](supabase-migration-target.md) — verify the CLI project ID, runtime API URL, and direct database connection all refer to the approved project.
+- [Adaptive cognitive orchestration](adaptive-cognitive-orchestration.md) — Muse Wonder chooses app-level cognition; keep provider reasoning settings separate.

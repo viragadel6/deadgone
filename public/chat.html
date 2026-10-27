@@ -1344,38 +1344,30 @@ body{ position: fixed; inset: 0; }
 .lightbox-stage.dragging img{
   cursor:grabbing;
 }
-#image-flow-modal{
-  position:fixed;
-  z-index:850;
-  inset:0;
-  display:flex;
-  align-items:flex-end;
-  justify-content:center;
-  padding:16px max(14px,var(--sar)) calc(16px + var(--sab)) max(14px,var(--sal));
-  background:rgba(0,0,0,.58);
-  opacity:0;
-  pointer-events:none;
-  transition:opacity .2s ease;
+#image-flow-panel{
+  display:none;
+  flex:0 1 auto;
+  width:100%;
+  max-height:min(58vh,640px);
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  padding:10px max(14px,var(--sar)) 12px max(14px,var(--sal));
+  border-top:1px solid rgba(255,255,255,.1);
+  background:rgba(18,20,37,.82);
+  -webkit-overflow-scrolling:touch;
 }
-#image-flow-modal.open{
-  opacity:1;
-  pointer-events:auto;
+#image-flow-panel.open{
+  display:block;
 }
 .image-flow-card{
-  width:min(100%,560px);
-  max-height:min(86vh,680px);
-  overflow:auto;
+  width:min(100%,840px);
+  margin:0 auto;
   border:1px solid rgba(255,255,255,.14);
-  border-radius:22px;
-  padding:18px;
+  border-radius:18px;
+  padding:14px;
   color:var(--fg);
   background:rgba(18,20,37,.94);
-  box-shadow:0 22px 70px rgba(0,0,0,.5);
-  transform:translateY(22px) scale(.98);
-  transition:transform .25s cubic-bezier(.2,1,.3,1);
-}
-#image-flow-modal.open .image-flow-card{
-  transform:translateY(0) scale(1);
+  box-shadow:0 12px 34px rgba(0,0,0,.24);
 }
 .image-flow-header{
   display:flex;
@@ -6218,6 +6210,60 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
       <div id="msg-list" role="list"></div>
     </div>
 
+  <section id="image-flow-panel" aria-hidden="true" aria-labelledby="image-flow-title" hidden>
+    <div class="image-flow-card">
+      <div class="image-flow-header">
+        <h2 id="image-flow-title">Kép létrehozása</h2>
+        <button class="image-flow-close" id="image-flow-close" type="button" aria-label="Bezárás">×</button>
+      </div>
+      <div class="image-flow-field">
+        <label for="image-flow-prompt" id="image-flow-prompt-label">Írd le a létrehozandó képet</label>
+        <textarea id="image-flow-prompt" maxlength="32000" placeholder="Például: egy napfényes, minimalista kávézó növényekkel, filmes fényekkel"></textarea>
+      </div>
+      <div class="image-flow-field">
+        <label for="image-flow-references">Referencia képek <span class="image-flow-count" id="image-flow-reference-count">0 / 14</span></label>
+        <div class="image-flow-references" id="image-flow-references"></div>
+        <div class="image-flow-reference-actions">
+          <button type="button" class="image-flow-chip" id="image-flow-add-file">Kép feltöltése</button>
+          <button type="button" class="image-flow-chip" id="image-flow-add-attached">Csatolt képek</button>
+          <button type="button" class="image-flow-chip" id="image-flow-add-last">Legutóbbi eredmény</button>
+          <button type="button" class="image-flow-chip" id="image-flow-clear-references">Referenciák törlése</button>
+        </div>
+        <input id="image-flow-file" type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/heic,image/heif,image/gif">
+      </div>
+      <div class="image-flow-option-grid">
+        <div class="image-flow-field">
+          <label for="image-flow-ratio">Képarány</label>
+          <select id="image-flow-ratio"></select>
+        </div>
+        <div class="image-flow-field">
+          <label for="image-flow-resolution">Felbontás</label>
+          <select id="image-flow-resolution"></select>
+        </div>
+        <div class="image-flow-field">
+          <label for="image-flow-count">Képek száma</label>
+          <select id="image-flow-count"></select>
+        </div>
+        <div class="image-flow-field">
+          <label for="image-flow-thinking">Gondolkodás</label>
+          <select id="image-flow-thinking"></select>
+        </div>
+        <div class="image-flow-field">
+          <label for="image-flow-safety">Biztonsági tűrés</label>
+          <select id="image-flow-safety"></select>
+        </div>
+        <div class="image-flow-field">
+          <label class="image-flow-toggle" for="image-flow-websearch"><input id="image-flow-websearch" type="checkbox"><span>Webes keresés a képhez</span></label>
+        </div>
+      </div>
+      <div class="image-flow-note" id="image-flow-note"></div>
+      <div class="image-flow-actions">
+        <button class="image-flow-cancel" id="image-flow-cancel" type="button">Mégse</button>
+        <button class="image-flow-submit" id="image-flow-submit" type="button">Kép létrehozása</button>
+      </div>
+    </div>
+  </section>
+
     <div id="ib-wrap">
       <div class="ib-inner">
         <div class="img-strip" id="img-strip" style="display:none"></div>
@@ -6306,59 +6352,6 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     <pre class="clipboard-preview-content" id="clipboard-preview-content" tabindex="0"></pre>
     <footer class="clipboard-preview-footer"><button type="button" id="clipboard-preview-done">Bezárás</button></footer>
   </section>
-</div>
-<div id="image-flow-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="image-flow-title">
-  <div class="image-flow-card" role="document">
-    <div class="image-flow-header">
-      <h2 id="image-flow-title">Kép létrehozása</h2>
-      <button class="image-flow-close" id="image-flow-close" type="button" aria-label="Bezárás">×</button>
-    </div>
-    <div class="image-flow-field">
-      <label for="image-flow-prompt" id="image-flow-prompt-label">Írd le a létrehozandó képet</label>
-      <textarea id="image-flow-prompt" maxlength="32000" placeholder="Például: egy napfényes, minimalista kávézó növényekkel, filmes fényekkel"></textarea>
-    </div>
-    <div class="image-flow-field">
-      <label for="image-flow-references">Referencia képek <span class="image-flow-count" id="image-flow-reference-count">0 / 14</span></label>
-      <div class="image-flow-references" id="image-flow-references"></div>
-      <div class="image-flow-reference-actions">
-        <button type="button" class="image-flow-chip" id="image-flow-add-file">Kép feltöltése</button>
-        <button type="button" class="image-flow-chip" id="image-flow-add-attached">Csatolt képek</button>
-        <button type="button" class="image-flow-chip" id="image-flow-add-last">Legutóbbi eredmény</button>
-        <button type="button" class="image-flow-chip" id="image-flow-clear-references">Referenciák törlése</button>
-      </div>
-      <input id="image-flow-file" type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/heic,image/heif,image/gif">
-    </div>
-    <div class="image-flow-option-grid">
-      <div class="image-flow-field">
-        <label for="image-flow-ratio">Képarány</label>
-        <select id="image-flow-ratio"></select>
-      </div>
-      <div class="image-flow-field">
-        <label for="image-flow-resolution">Felbontás</label>
-        <select id="image-flow-resolution"></select>
-      </div>
-      <div class="image-flow-field">
-        <label for="image-flow-count">Képek száma</label>
-        <select id="image-flow-count"></select>
-      </div>
-      <div class="image-flow-field">
-        <label for="image-flow-thinking">Gondolkodás</label>
-        <select id="image-flow-thinking"></select>
-      </div>
-      <div class="image-flow-field">
-        <label for="image-flow-safety">Biztonsági tűrés</label>
-        <select id="image-flow-safety"></select>
-      </div>
-      <div class="image-flow-field">
-        <label class="image-flow-toggle" for="image-flow-websearch"><input id="image-flow-websearch" type="checkbox"><span>Webes keresés a képhez</span></label>
-      </div>
-    </div>
-    <div class="image-flow-note" id="image-flow-note"></div>
-    <div class="image-flow-actions">
-      <button class="image-flow-cancel" id="image-flow-cancel" type="button">Mégse</button>
-      <button class="image-flow-submit" id="image-flow-submit" type="button">Kép létrehozása</button>
-    </div>
-  </div>
 </div>
 <div id="media-lightbox" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Teljes képernyős képnézet">
   <div class="lightbox-header">
@@ -7799,9 +7792,9 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
 
   function openImageFlow(mode, descriptor, prompt){
     if(imageRequestInProgress){ toast("A képkérés még folyamatban van.", "inf"); return; }
-    var modal = document.getElementById("image-flow-modal");
+    var panel = document.getElementById("image-flow-panel");
     var promptInput = document.getElementById("image-flow-prompt");
-    if(!modal || !promptInput) return;
+    if(!panel || !promptInput) return;
     var references = [];
     if(Array.isArray(descriptor)) references = descriptor;
     else if(descriptor && descriptor.url) references = [descriptor];
@@ -7821,8 +7814,9 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     applyImageFlowSettings(readImageFlowSettings());
     renderImageFlowReferences();
     updateImageFlowNote();
-    modal.classList.add("open");
-    modal.setAttribute("aria-hidden", "false");
+    panel.hidden = false;
+    panel.classList.add("open");
+    panel.setAttribute("aria-hidden", "false");
     setImageFlowBusy(false);
     loadImageModelOptions();
     window.setTimeout(function(){ promptInput.focus(); }, 0);
@@ -7830,17 +7824,20 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
 
   function closeImageFlow(force){
     if(imageRequestInProgress && !force) return;
-    var modal = document.getElementById("image-flow-modal");
+    var panel = document.getElementById("image-flow-panel");
     var promptInput = document.getElementById("image-flow-prompt");
     var previousFocus = imageFlowState ? imageFlowState.lastFocus : null;
     var lastPrompt = promptInput ? promptInput.value.trim() : "";
-    if(modal){
-      modal.classList.remove("open");
-      modal.setAttribute("aria-hidden", "true");
+    if(panel){
+      panel.classList.remove("open");
+      panel.setAttribute("aria-hidden", "true");
+      panel.hidden = true;
     }
     imageFlowState = {mode:"generate", references:[], lastFocus:null, lastPrompt:lastPrompt};
-    if(previousFocus && typeof previousFocus.focus === "function"){
+    if(previousFocus && previousFocus.isConnected && previousFocus.getClientRects().length && typeof previousFocus.focus === "function"){
       try{ previousFocus.focus(); }catch(error){}
+    }else if(textarea){
+      textarea.focus();
     }
   }
 
@@ -7964,7 +7961,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     var fileInput = document.getElementById("fg");
     var filesInput = document.getElementById("fg-files");
     var cameraInput = document.getElementById("fg-camera");
-    var modal = document.getElementById("image-flow-modal");
+    var panel = document.getElementById("image-flow-panel");
     var close = document.getElementById("image-flow-close");
     var cancel = document.getElementById("image-flow-cancel");
     var submit = document.getElementById("image-flow-submit");
@@ -8061,8 +8058,7 @@ const GlassSlider = ({ value, onChange, min = 0, max = 100 }) => {
     if(prompt) prompt.addEventListener("keydown", function(event){
       if((event.ctrlKey || event.metaKey) && event.key === "Enter"){ event.preventDefault(); submitImageFlow(); }
     });
-    if(modal) modal.addEventListener("click", function(event){ if(event.target === modal) closeImageFlow(false); });
-    if(modal) modal.addEventListener("keydown", function(event){
+    if(panel) panel.addEventListener("keydown", function(event){
       if(event.key === "Escape"){ event.preventDefault(); cancelImageFlow(); }
     });
   }
