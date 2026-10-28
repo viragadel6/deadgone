@@ -32,9 +32,6 @@ MAX_RESULT_BYTES = 12_000
 EXECUTE_WAIT_MAX_SECONDS = 600
 CLEANUP_TIMEOUT_SECONDS = 12
 VM_LIFETIME_SECONDS = 22_500
-DEFINITE_PROVISION_FAILURES = frozenset(
-    {"PROVIDER_AUTH", "PROVIDER_RATE_LIMIT", "PROVIDER_REJECTED"}
-)
 MAX_PROVIDER_BYTES = 2_097_152
 
 
@@ -331,34 +328,39 @@ class Sandbox:
             raise
 
     async def _provision(self) -> str:
-        reserved_id = str(uuid.uuid4())
-        self._uncertain_sessions.add(reserved_id)
-        try:
-            data = await self._api(
-                "/v1/vms?wait=true",
-                "POST",
-                {
-                    "session_id": reserved_id,
-                    "vm_lifetime_seconds": VM_LIFETIME_SECONDS,
-                    "egress_policy": {
-                        "allow_http": False,
-                        "allow_https": True,
-                        "allow_package_managers": True,
-                        "allowed_domains": list(self._config.allowed_domains),
-                        "allowed_cidrs": [],
-                    },
+        session_data = await self._api(
+            "/v1/sessions/session",
+            "POST",
+            {
+                "vm_lifetime_seconds": VM_LIFETIME_SECONDS,
+                "prewarm": False,
+            },
+            timeout=30,
+        )
+        session_record = self._output_record(session_data)
+        session_id = self._property_string(session_record, "session_id")
+        self._uncertain_sessions.add(session_id)
+        data = await self._api(
+            "/v1/vms?wait=true",
+            "POST",
+            {
+                "session_id": session_id,
+                "egress_policy": {
+                    "allow_http": False,
+                    "allow_https": True,
+                    "allow_package_managers": True,
+                    "allowed_domains": list(self._config.allowed_domains),
+                    "allowed_cidrs": [],
                 },
-                timeout=90,
-            )
-        except Exception as exc:
-            if isinstance(exc, AgentFault) and exc.code in DEFINITE_PROVISION_FAILURES:
-                self._uncertain_sessions.discard(reserved_id)
-            raise
+            },
+            timeout=90,
+        )
         payload = self._output_record(data)
-        session_id = self._property_string(payload, "session_id")
-        self._uncertain_sessions.discard(reserved_id)
-        self._owned_sessions.add(session_id)
-        if session_id != reserved_id:
+        provisioned_id = self._property_string(payload, "session_id")
+        self._owned_sessions.add(provisioned_id)
+        self._uncertain_sessions.discard(session_id)
+        if provisioned_id != session_id:
+            self._uncertain_sessions.add(session_id)
             raise ProtocolFault(
                 "A VM munkamenet-azonosítója váratlanul megváltozott.",
                 code="PROVIDER_PROTOCOL",
