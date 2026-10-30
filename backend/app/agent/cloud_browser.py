@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
-from collections.abc import Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 from urllib.parse import quote, urlparse
@@ -34,6 +35,7 @@ MAX_CONTROL_ERRORS = 5
 CLEANUP_DEADLINE_SECONDS = 120.0
 CREATION_CANCEL_GRACE_SECONDS = 5.0
 MAX_PROTECTED_CANCELLATIONS = 3
+MAX_RELEASE_ATTEMPTS = 5
 REQUEST_TIMEOUT_SECONDS = 60.0
 CONNECT_TIMEOUT_SECONDS = 10.0
 CALL_DEADLINE_SECONDS = 90.0
@@ -48,6 +50,7 @@ STOPPED_STATES = frozenset({"stopped", "stopping", "terminated", "closed", "fail
 CLIENT_LIMITS = httpx.Limits(
     max_connections=8, max_keepalive_connections=4, keepalive_expiry=60.0
 )
+_TIMEOUT_ERRORS: tuple[type[BaseException], ...] = (TimeoutError, asyncio.TimeoutError)
 
 _BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
 
@@ -80,26 +83,78 @@ def _api_key() -> str:
     return key
 
 
-def _client_slot() -> "_ClientSlot":
+def _log_dispose_result(future: concurrent.futures.Future[Any]) -> None:
+    if future.cancelled():
+        return
+    failure = future.exception()
+    if failure is not None:
+        logger.warning("cloud_browser: az elavult HTTP kliens lezárása nem sikerült: %r", failure)
+
+
+async def _dispose_client(
+    client: httpx.AsyncClient, owner: asyncio.AbstractEventLoop | None
+) -> None:
+    if client.is_closed:
+        return
+    current = asyncio.get_running_loop()
+    if (
+        owner is not None
+        and owner is not current
+        and not owner.is_closed()
+        and owner.is_running()
+    ):
+        try:
+            future = asyncio.run_coroutine_threadsafe(client.aclose(), owner)
+        except RuntimeError as exc:
+            logger.warning(
+                "cloud_browser: az elavult HTTP kliens lezárása nem ütemezhető: %r", exc
+            )
+            return
+        future.add_done_callback(_log_dispose_result)
+        return
+    try:
+        await client.aclose()
+    except Exception as exc:
+        logger.warning("cloud_browser: az elavult HTTP kliens lezárása nem sikerült: %r", exc)
+
+
+async def _client_slot() -> "_ClientSlot":
     loop = asyncio.get_running_loop()
     key = id(loop)
     slot = _client_slots.get(key)
     if slot is not None and slot.loop is loop:
         return slot
-    if slot is not None and slot.client is not None and not slot.client.is_closed:
-        logger.warning("cloud_browser: elavult HTTP kliens eldobva.")
+    discarded: list[_ClientSlot] = []
+    if slot is not None:
+        discarded.append(slot)
     slot = _ClientSlot(loop=loop)
     _client_slots[key] = slot
     if len(_client_slots) > MAX_CLIENT_SLOTS:
         for stale_key in [
-            item for item, value in _client_slots.items() if value.loop.is_closed()
+            item
+            for item, value in _client_slots.items()
+            if item != key and value.loop.is_closed()
         ]:
-            _client_slots.pop(stale_key, None)
+            stale = _client_slots.pop(stale_key, None)
+            if stale is not None:
+                discarded.append(stale)
+    if len(_client_slots) > MAX_CLIENT_SLOTS:
+        overflow = len(_client_slots) - MAX_CLIENT_SLOTS
+        for stale_key in [item for item in _client_slots if item != key][:overflow]:
+            stale = _client_slots.pop(stale_key, None)
+            if stale is not None:
+                discarded.append(stale)
+    for stale in discarded:
+        stale_client = stale.client
+        stale.client = None
+        if stale_client is not None and not stale_client.is_closed:
+            logger.warning("cloud_browser: elavult HTTP kliens eldobva.")
+            await _dispose_client(stale_client, stale.loop)
     return slot
 
 
 async def get_client() -> httpx.AsyncClient:
-    slot = _client_slot()
+    slot = await _client_slot()
     client = slot.client
     if client is not None and not client.is_closed:
         return client
@@ -118,12 +173,12 @@ async def get_client() -> httpx.AsyncClient:
 
 
 async def close_client() -> None:
-    slot = _client_slot()
+    slot = await _client_slot()
     async with slot.lock:
         client = slot.client
         slot.client = None
-    if client is not None and not client.is_closed:
-        await client.aclose()
+        if client is not None and not client.is_closed:
+            await client.aclose()
 
 
 def _raise_if_cancelled(cancel: asyncio.Event | None) -> None:
@@ -131,9 +186,36 @@ def _raise_if_cancelled(cancel: asyncio.Event | None) -> None:
         raise CloudBrowserCancelled()
 
 
-def _reap_exception(task: asyncio.Task[Any]) -> None:
+def _clear_cancellation_requests() -> None:
+    current = asyncio.current_task()
+    if current is None:
+        return
+    uncancel = getattr(current, "uncancel", None)
+    cancelling = getattr(current, "cancelling", None)
+    if not callable(uncancel) or not callable(cancelling):
+        return
+    while cancelling() > 0:
+        uncancel()
+
+
+def _reap_exception(task: asyncio.Future[Any]) -> None:
     if task.done() and not task.cancelled():
         task.exception()
+
+
+async def _cancel_and_reap(tasks: list[asyncio.Future[Any]]) -> None:
+    pending = [task for task in tasks if not task.done()]
+    for task in pending:
+        task.cancel()
+    try:
+        if pending:
+            await asyncio.wait(pending)
+    finally:
+        for task in tasks:
+            if task.done():
+                _reap_exception(task)
+            else:
+                task.add_done_callback(_reap_exception)
 
 
 async def _reap(task: asyncio.Task[Any], label: str) -> None:
@@ -156,7 +238,7 @@ async def _sleep_unless_cancelled(seconds: float, cancel: asyncio.Event | None) 
         return
     try:
         await asyncio.wait_for(cancel.wait(), timeout=delay)
-    except TimeoutError:
+    except _TIMEOUT_ERRORS:
         return
     _raise_if_cancelled(cancel)
 
@@ -211,8 +293,10 @@ def _timeout_minutes(timeout_minutes: Any) -> int:
     return min(MAX_TIMEOUT_MINUTES, value)
 
 
-def _proxy_country(country_code: Any) -> str:
-    raw = "" if country_code is None else str(country_code)
+def _proxy_country(country_code: Any) -> str | None:
+    if country_code is None:
+        return None
+    raw = str(country_code)
     country = raw.strip().lower()
     if (
         not country
@@ -248,42 +332,87 @@ def _cdp_url(value: Any) -> str:
     return candidate
 
 
-async def _await_cancellable(
-    awaitable: Coroutine[Any, Any, T], cancel: asyncio.Event | None
-) -> T:
-    task: asyncio.Task[T] = asyncio.ensure_future(awaitable)
-    if cancel is None:
-        try:
-            return await task
-        finally:
-            _reap_exception(task)
-    waiter: asyncio.Task[bool] = asyncio.ensure_future(cancel.wait())
-    watchers: set[asyncio.Task[Any]] = {task, waiter}
+async def _discard_result(
+    task: asyncio.Future[T], discard: Callable[[T], Awaitable[Any]] | None
+) -> None:
+    if discard is None or not task.done() or task.cancelled():
+        return
+    if task.exception() is not None:
+        return
     try:
-        done, _pending = await asyncio.wait(watchers, return_when=asyncio.FIRST_COMPLETED)
-        if task in done:
-            return task.result()
-        task.cancel()
-        raise CloudBrowserCancelled()
+        await discard(task.result())
+    except Exception as exc:
+        logger.warning("cloud_browser: az eldobott eredmény lezárása nem sikerült: %r", exc)
+
+
+async def _await_cancellable(
+    awaitable: Awaitable[T],
+    cancel: asyncio.Event | None,
+    discard: Callable[[T], Awaitable[Any]] | None = None,
+) -> T:
+    task: asyncio.Future[T] = asyncio.ensure_future(awaitable)
+    waiter: asyncio.Future[Any] | None = (
+        asyncio.ensure_future(cancel.wait()) if cancel is not None else None
+    )
+    watchers: list[asyncio.Future[Any]] = [task]
+    if waiter is not None:
+        watchers.append(waiter)
+    delivered = False
+    try:
+        if waiter is None or cancel is None:
+            value = await task
+            delivered = True
+            return value
+        done, _pending = await asyncio.wait(
+            set(watchers), return_when=asyncio.FIRST_COMPLETED
+        )
+        if waiter in done or cancel.is_set():
+            raise CloudBrowserCancelled()
+        value = task.result()
+        delivered = True
+        return value
     finally:
-        for watcher in (task, waiter):
-            if not watcher.done():
-                watcher.cancel()
-            _reap_exception(watcher)
+        await _cancel_and_reap(watchers)
+        if not delivered:
+            await _discard_result(task, discard)
+
+
+async def _close_response(response: httpx.Response) -> None:
+    await response.aclose()
+
+
+async def _next_chunk(iterator: AsyncIterator[bytes]) -> bytes | None:
+    try:
+        return await iterator.__anext__()
+    except StopAsyncIteration:
+        return None
 
 
 async def _read_bounded(response: httpx.Response, cancel: asyncio.Event | None) -> bytes:
+    _raise_if_cancelled(cancel)
     chunks: list[bytes] = []
     total = 0
-    async for chunk in response.aiter_bytes():
-        if cancel is not None and cancel.is_set():
-            raise CloudBrowserCancelled()
-        total += len(chunk)
-        if total > MAX_RESPONSE_BYTES:
-            raise CloudBrowserError(
-                f"Browser Use: the response exceeds {MAX_RESPONSE_BYTES} bytes."
-            )
-        chunks.append(chunk)
+    iterator: AsyncIterator[bytes] = response.aiter_bytes().__aiter__()
+    try:
+        while True:
+            chunk = await _await_cancellable(_next_chunk(iterator), cancel)
+            if chunk is None:
+                break
+            _raise_if_cancelled(cancel)
+            total += len(chunk)
+            if total > MAX_RESPONSE_BYTES:
+                raise CloudBrowserError(
+                    f"Browser Use: the response exceeds {MAX_RESPONSE_BYTES} bytes."
+                )
+            chunks.append(chunk)
+    finally:
+        closer = getattr(iterator, "aclose", None)
+        if callable(closer):
+            try:
+                await closer()
+            except Exception as exc:
+                logger.debug("cloud_browser: a válaszfolyam lezárása nem sikerült: %r", exc)
+    _raise_if_cancelled(cancel)
     return b"".join(chunks)
 
 
@@ -300,7 +429,9 @@ async def _request(
     request = client.build_request(
         method, f"{API_URL}{path}", headers=headers, json=body, timeout=timeout
     )
-    response = await _await_cancellable(client.send(request, stream=True), cancel)
+    response = await _await_cancellable(
+        client.send(request, stream=True), cancel, _close_response
+    )
     try:
         content = await _read_bounded(response, cancel)
     finally:
@@ -347,7 +478,7 @@ async def _call(
     except CloudBrowserError as exc:
         _raise_if_cancelled(cancel)
         raise exc
-    except TimeoutError as exc:
+    except _TIMEOUT_ERRORS as exc:
         _raise_if_cancelled(cancel)
         raise CloudBrowserError(
             f"Browser Use: the {method} {path or '/'} request exceeded its deadline."
@@ -401,19 +532,28 @@ async def _await_protected(
             break
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
-        except TimeoutError:
+        except _TIMEOUT_ERRORS:
+            if task.done():
+                break
             logger.warning("cloud_browser: %s határidőn belül nem fejeződött be.", label)
             break
         except asyncio.CancelledError as exc:
             if task.cancelled():
-                raise
+                break
             absorbed += 1
             if absorbed > MAX_PROTECTED_CANCELLATIONS:
                 logger.warning("cloud_browser: %s várakozása megszakadt.", label)
                 raise
             if cancellation is None:
                 cancellation = exc
-    if task.done() and not task.cancelled():
+        except Exception:
+            break
+    if task.cancelled():
+        logger.warning("cloud_browser: %s megszakítva ért véget.", label)
+        if cancellation is None:
+            raise CloudBrowserError(f"The protected operation was cancelled: {label}")
+        return cancellation
+    if task.done():
         failure = task.exception()
         if failure is not None:
             logger.warning("cloud_browser: %s hibával ért véget: %s", label, failure)
@@ -428,38 +568,96 @@ async def _stop_browser_quietly(browser_id: Any) -> bool:
     except CloudBrowserError as exc:
         logger.warning("cloud_browser: érvénytelen böngészőazonosító a leállításhoz: %s", exc)
         return False
+    stop_task: asyncio.Task[dict[str, Any]] = _retain_task(
+        _call(path, "PATCH", {"action": "stop"}, None)
+    )
     try:
-        await _call(path, "PATCH", {"action": "stop"}, None)
+        interruption = await _await_protected(
+            stop_task, STOP_REQUEST_DEADLINE_SECONDS, "takarítási leállítási kérés"
+        )
     except asyncio.CancelledError:
-        raise
+        _clear_cancellation_requests()
+        logger.warning(
+            "cloud_browser: a %s böngésző leállításának várakozása megszakadt; "
+            "a kérés a háttérben folytatódik.",
+            path,
+        )
+        return False
     except Exception as exc:
         logger.warning("cloud_browser: a %s böngésző leállítása nem sikerült: %s", path, exc)
+        return False
+    if interruption is not None:
+        _clear_cancellation_requests()
+    if not stop_task.done():
+        logger.warning(
+            "cloud_browser: a %s böngésző leállítása nem fejeződött be a határidőn belül.", path
+        )
+        return False
+    if stop_task.cancelled():
+        logger.warning("cloud_browser: a %s böngésző leállítási kérése megszakadt.", path)
+        return False
+    failure = stop_task.exception()
+    if failure is not None:
+        logger.warning("cloud_browser: a %s böngésző leállítása nem sikerült: %s", path, failure)
         return False
     return True
 
 
-async def _cleanup_created_browser(creation_task: asyncio.Task[dict[str, Any]]) -> None:
+def _schedule_late_cleanup(creation_task: asyncio.Task[dict[str, Any]]) -> None:
+    if creation_task.cancelled():
+        return
+    if creation_task.exception() is not None:
+        return
     try:
-        browser = await asyncio.shield(creation_task)
-    except asyncio.CancelledError as exc:
-        if creation_task.cancelled():
-            logger.warning(
-                "cloud_browser: a létrehozás megszakadt, az azonosító ismeretlen; "
-                "a szerver oldali időkorlát állítja le a böngészőt."
-            )
-            return
-        if isinstance(exc, CloudBrowserCancelled):
-            logger.warning(
-                "cloud_browser: a létrehozás alkalmazásszintű megszakítás miatt nem "
-                "fejeződött be; a böngészőt a szerver oldali időkorlát állítja le."
-            )
-            return
-        raise
-    except Exception as exc:
+        _retain_task(_cleanup_created_browser(creation_task))
+    except RuntimeError as exc:
+        logger.error(
+            "cloud_browser: a késői takarítás nem ütemezhető, a böngészőt a szerver oldali "
+            "időkorlát állítja le: %r",
+            exc,
+        )
+
+
+async def _cleanup_created_browser(creation_task: asyncio.Task[dict[str, Any]]) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + CLEANUP_DEADLINE_SECONDS
+    absorbed = 0
+    while not creation_task.done():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        try:
+            await asyncio.wait({creation_task}, timeout=remaining)
+        except asyncio.CancelledError:
+            absorbed += 1
+            _clear_cancellation_requests()
+            if absorbed > MAX_PROTECTED_CANCELLATIONS:
+                logger.warning(
+                    "cloud_browser: a takarítás várakozása többször megszakadt; "
+                    "a létrehozás befejeződése után késői takarítás következik."
+                )
+                break
+    if not creation_task.done():
         logger.warning(
-            "cloud_browser: a létrehozás hibával ért véget, nincs leállítandó azonosító: %s", exc
+            "cloud_browser: a létrehozás nem fejeződött be a takarítási határidőn belül; "
+            "a befejeződés után késői leállítás következik."
+        )
+        creation_task.add_done_callback(_schedule_late_cleanup)
+        return
+    if creation_task.cancelled():
+        logger.warning(
+            "cloud_browser: a létrehozás megszakadt, az azonosító ismeretlen; "
+            "a szerver oldali időkorlát állítja le a böngészőt."
         )
         return
+    failure = creation_task.exception()
+    if failure is not None:
+        logger.warning(
+            "cloud_browser: a létrehozás hibával ért véget, nincs leállítandó azonosító: %s",
+            failure,
+        )
+        return
+    browser = creation_task.result()
     record = browser if isinstance(browser, dict) else {}
     raw_id = record.get("id")
     browser_id = str(raw_id or "").strip()
@@ -548,9 +746,18 @@ async def start_cloud_browser(
     except (asyncio.CancelledError, Exception) as exc:
         if creation_task is not None:
             cleanup_task = _retain_task(_cleanup_created_browser(creation_task))
-            cancellation = await _await_protected(
-                cleanup_task, CLEANUP_DEADLINE_SECONDS, "felhőböngésző takarítás"
-            )
+            try:
+                cancellation = await _await_protected(
+                    cleanup_task, CLEANUP_DEADLINE_SECONDS, "felhőböngésző takarítás"
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "cloud_browser: a felhőböngésző takarítása hibával ért véget: %r",
+                    cleanup_exc,
+                )
+                cancellation = None
             if cancellation is not None and isinstance(exc, Exception):
                 raise cancellation
         if isinstance(exc, Exception):
@@ -674,6 +881,22 @@ async def stop_cloud_browser(browser_id: Any, cancel: asyncio.Event | None) -> d
     return payload
 
 
+def _response_rows(response: Any) -> list[dict[str, Any]]:
+    data = getattr(response, "data", None)
+    if isinstance(data, list):
+        return [row for row in data if isinstance(row, dict)]
+    if isinstance(data, dict):
+        return [data]
+    return []
+
+
+def _first_row(response: Any) -> dict[str, Any] | None:
+    rows = _response_rows(response)
+    if not rows:
+        return None
+    return rows[0]
+
+
 async def _find_session_id(database: SupabaseDatabase, browser_id: str) -> str | None:
     try:
         response = await (
@@ -686,7 +909,7 @@ async def _find_session_id(database: SupabaseDatabase, browser_id: str) -> str |
     except DatabaseError as exc:
         logger.warning("cloud_browser: a munkamenet kikeresése nem sikerült: %s", exc)
         return None
-    row = response.maybe_single()
+    row = _first_row(response)
     if row is None:
         return None
     session_id = row.get("id")
@@ -701,6 +924,13 @@ async def register_chat_browser(job_id: Any, result: Any) -> str:
     record = result if isinstance(result, dict) else None
     if record is None:
         raise CloudBrowserError("Saving the browser session failed: the result is not an object.")
+    nested = record.get("result")
+    if "browser_id" not in record and isinstance(nested, dict):
+        status = record.get("status")
+        if isinstance(status, str) and status.strip().lower() == "error":
+            detail = nested.get("message") or "the browser could not be started."
+            raise CloudBrowserError(f"Saving the browser session failed: {detail}")
+        record = nested
     raw_browser_id = record.get("browser_id")
     browser_id = str(raw_browser_id).strip() if raw_browser_id is not None else ""
     if not browser_id:
@@ -735,8 +965,11 @@ async def register_chat_browser(job_id: Any, result: Any) -> str:
         if recovered is not None:
             return recovered
         raise CloudBrowserError(f"Saving the browser session failed: {exc}") from exc
-    row = response.maybe_single()
+    row = _first_row(response)
     if row is None:
+        recovered = await _find_session_id(database, browser_id)
+        if recovered is not None:
+            return recovered
         raise CloudBrowserError("Saving the browser session failed: no row was returned.")
     session_id = row.get("id")
     if session_id is None or not str(session_id).strip():
@@ -810,17 +1043,69 @@ async def _update_session(
     filters: list[tuple[str, Any]],
     label: str,
 ) -> int:
-    query = database.table(SESSION_TABLE).update(payload)
+    query: Any = database.table(SESSION_TABLE).update(payload)
     for column, value in filters:
         query = query.eq(column, value)
+    selector = getattr(query, "select", None)
+    if callable(selector):
+        query = selector("id")
     try:
         response = await query.execute()
     except DatabaseError as exc:
         raise CloudBrowserError(f"{label} failed: {exc}") from exc
-    affected = len(response.rows)
+    affected = len(_response_rows(response))
     if affected == 0:
         logger.debug("cloud_browser: %s nem érintett sort.", label)
     return affected
+
+
+async def _active_sessions(database: SupabaseDatabase, job_id: str) -> list[dict[str, Any]]:
+    try:
+        response = await (
+            database.table(SESSION_TABLE)
+            .select("id, control_mode, agent_busy")
+            .eq("job_id", job_id)
+            .eq("status", "active")
+            .execute()
+        )
+    except DatabaseError as exc:
+        raise CloudBrowserError(f"Reading the browser session failed: {exc}") from exc
+    return _response_rows(response)
+
+
+def _release_transition(
+    row: dict[str, Any], job_id: str
+) -> tuple[dict[str, Any], list[tuple[str, Any]], str] | None:
+    session_id = row.get("id")
+    if session_id is None:
+        return None
+    mode = row.get("control_mode")
+    busy = row.get("agent_busy")
+    if mode == "requested" and busy is True:
+        return (
+            {"control_mode": "human", "agent_busy": False},
+            [
+                ("id", session_id),
+                ("job_id", job_id),
+                ("status", "active"),
+                ("control_mode", "requested"),
+                ("agent_busy", True),
+            ],
+            "Handing the browser control over",
+        )
+    if mode == "agent" and busy is True:
+        return (
+            {"agent_busy": False},
+            [
+                ("id", session_id),
+                ("job_id", job_id),
+                ("status", "active"),
+                ("control_mode", "agent"),
+                ("agent_busy", True),
+            ],
+            "Releasing the browser agent busy flag",
+        )
+    return None
 
 
 async def set_browser_agent_busy(job_id: Any, busy: bool) -> None:
@@ -838,26 +1123,26 @@ async def set_browser_agent_busy(job_id: Any, busy: bool) -> None:
             "Setting the browser agent busy flag",
         )
         return
-    await _update_session(
-        database,
-        {"control_mode": "human", "agent_busy": False},
-        [
-            ("job_id", raw_job_id),
-            ("status", "active"),
-            ("control_mode", "requested"),
-            ("agent_busy", True),
-        ],
-        "Handing the browser control over",
-    )
-    await _update_session(
-        database,
-        {"agent_busy": False},
-        [
-            ("job_id", raw_job_id),
-            ("status", "active"),
-            ("control_mode", "agent"),
-        ],
-        "Releasing the browser agent busy flag",
+    for _attempt in range(MAX_RELEASE_ATTEMPTS):
+        rows = await _active_sessions(database, raw_job_id)
+        conflicted = False
+        for row in rows:
+            transition = _release_transition(row, raw_job_id)
+            if transition is None:
+                continue
+            payload, filters, label = transition
+            affected = await _update_session(database, payload, filters, label)
+            if affected == 0:
+                conflicted = True
+        if not conflicted:
+            return
+        logger.debug(
+            "cloud_browser: az irányítás felszabadítása ütközött, újrapróbálás (%d/%d).",
+            _attempt + 1,
+            MAX_RELEASE_ATTEMPTS,
+        )
+    raise CloudBrowserError(
+        "Releasing the browser control failed: the session kept changing concurrently."
     )
 
 
