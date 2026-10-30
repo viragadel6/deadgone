@@ -8,7 +8,7 @@ import socket
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Coroutine
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from websockets.asyncio.client import ClientConnection
 from websockets.asyncio.client import connect as ws_connect
@@ -32,6 +32,7 @@ CDP_MAX_CONNECTIONS = 16
 MAX_ACQUIRE_ATTEMPTS = 3
 CDP_MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 CDP_ERROR_DETAIL_CHARS = 400
+CDP_MAX_URL_LENGTH = 8192
 METHOD_NOT_FOUND_CODE = -32601
 SCREENSHOT_FORMAT = "jpeg"
 SCREENSHOT_QUALITY = 75
@@ -66,6 +67,8 @@ LINE_DELTA_PIXELS = 16.0
 PAGE_DELTA_PIXELS = 800.0
 MIN_SCALE_FACTOR = 0.1
 MAX_SCALE_FACTOR = 10.0
+WEBSOCKET_SCHEMES = frozenset({"ws", "wss"})
+HTTP_SCHEME_MAP = {"http": "ws", "https": "wss"}
 EXCLUDED_TARGET_PREFIXES = (
     "chrome://",
     "chrome-extension://",
@@ -181,6 +184,15 @@ def _text(value: Any, limit: int) -> str | None:
     if not stripped or len(stripped) > limit:
         return None
     return stripped
+
+
+def _truncated_text(value: Any, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    return stripped[:limit]
 
 
 def _number(value: Any) -> float | None:
@@ -599,7 +611,7 @@ class _CdpConnection:
                 self._exchange(connection, request_id, raw, future),
                 timeout=CDP_COMMAND_TIMEOUT_SECONDS,
             )
-        except TimeoutError as exc:
+        except (asyncio.TimeoutError, TimeoutError) as exc:
             raise BrowserCdpError(f"A CDP parancs nem válaszolt időben: {method}.") from exc
 
     async def _exchange(
@@ -700,7 +712,9 @@ class _CdpConnection:
             return BrowserCdpError(
                 f"CDP hiba ({method}): {str(error)[:CDP_ERROR_DETAIL_CHARS]}"
             )
-        message = _text(record.get("message"), CDP_ERROR_DETAIL_CHARS) or "ismeretlen hiba"
+        message = (
+            _truncated_text(record.get("message"), CDP_ERROR_DETAIL_CHARS) or "ismeretlen hiba"
+        )
         raw_code = record.get("code")
         code = raw_code if isinstance(raw_code, int) and not isinstance(raw_code, bool) else None
         data = record.get("data")
@@ -709,11 +723,14 @@ class _CdpConnection:
             rendered += f" [{code}]"
         rendered += f": {message}"
         if data is not None:
-            detail = (
-                json.dumps(data, ensure_ascii=False)
-                if isinstance(data, (dict, list))
-                else str(data)
-            )
+            try:
+                detail = (
+                    json.dumps(data, ensure_ascii=False)
+                    if isinstance(data, (dict, list))
+                    else str(data)
+                )
+            except (TypeError, ValueError):
+                detail = str(data)
             rendered += f" | {detail[:CDP_ERROR_DETAIL_CHARS]}"
         failure = BrowserCdpError(rendered[: 4 * CDP_ERROR_DETAIL_CHARS], code=code, data=data)
         return _stale_session_error(failure)
@@ -892,7 +909,7 @@ class _CdpConnection:
                 logger.warning("cdp: a lap címe nem kérdezhető le: %s", exc.message)
                 return self.metrics.url
             target = _record(info.get("targetInfo"))
-            url = _text(target.get("url"), 8192) if target is not None else None
+            url = _text(target.get("url"), CDP_MAX_URL_LENGTH) if target is not None else None
             if url is not None:
                 self.metrics = replace(self.metrics, url=url)
                 return url
@@ -909,7 +926,7 @@ class _CdpConnection:
         if isinstance(entries, list) and isinstance(index, int) and not isinstance(index, bool):
             if 0 <= index < len(entries):
                 entry = _record(entries[index])
-                url = _text(entry.get("url"), 8192) if entry is not None else None
+                url = _text(entry.get("url"), CDP_MAX_URL_LENGTH) if entry is not None else None
                 if url is not None:
                     self.metrics = replace(self.metrics, url=url)
                     return url
@@ -946,7 +963,7 @@ class _CdpConnection:
 
 
 def _bind_registry() -> None:
-    global _registry_lock, _registry_loop, _registry_map
+    global _registry_lock, _registry_loop, _registry_map, _janitor
     loop = asyncio.get_running_loop()
     if _registry_lock is not None and _registry_loop is loop:
         return
@@ -955,6 +972,7 @@ def _bind_registry() -> None:
             "cdp: %d elavult böngészőkapcsolat eldobva (új eseményciklus).", len(_registry_map)
         )
         _registry_map = {}
+    _janitor = None
     _registry_lock = asyncio.Lock()
     _registry_loop = loop
 
@@ -1025,6 +1043,10 @@ def _blocked_address(value: str) -> bool:
         address = ipaddress.ip_address(candidate)
     except ValueError:
         return True
+    if isinstance(address, ipaddress.IPv6Address):
+        mapped = address.ipv4_mapped
+        if mapped is not None:
+            address = mapped
     return (
         address.is_private
         or address.is_loopback
@@ -1035,25 +1057,87 @@ def _blocked_address(value: str) -> bool:
     )
 
 
+def _settings_value(name: str, default: Any) -> Any:
+    try:
+        settings = get_settings()
+    except Exception as exc:
+        logger.warning("cdp: a beállítások nem olvashatók: %r", exc)
+        return default
+    value = getattr(settings, name, default)
+    return default if value is None else value
+
+
 def _allowed_browser_hosts() -> frozenset[str]:
-    raw = get_settings().chat_browser_allowed_hosts
-    return frozenset(item.strip().lower() for item in raw.split(",") if item.strip())
+    raw = _settings_value("chat_browser_allowed_hosts", "")
+    if isinstance(raw, str):
+        items = raw.split(",")
+    elif isinstance(raw, (list, tuple, set, frozenset)):
+        items = [str(item) for item in raw]
+    else:
+        items = []
+    return frozenset(item.strip().lower() for item in items if item and item.strip())
+
+
+def _private_hosts_allowed() -> bool:
+    raw = _settings_value("chat_browser_allow_private_hosts", False)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    if isinstance(raw, int):
+        return raw != 0
+    return False
+
+
+def normalize_cdp_url(url: Any) -> str:
+    if not isinstance(url, str):
+        raise BrowserCdpError("Hiányzó böngésző cím.")
+    candidate = url.strip()
+    if not candidate:
+        raise BrowserCdpError("Hiányzó böngésző cím.")
+    if len(candidate) > CDP_MAX_URL_LENGTH:
+        raise BrowserCdpError("A böngésző cím túl hosszú.")
+    if any(character.isspace() or ord(character) < 32 for character in candidate):
+        raise BrowserCdpError("A böngésző cím érvénytelen karaktert tartalmaz.")
+    try:
+        parsed = urlparse(candidate)
+    except ValueError as exc:
+        raise BrowserCdpError("A böngésző cím nem értelmezhető.") from exc
+    scheme = (parsed.scheme or "").lower()
+    if scheme in HTTP_SCHEME_MAP:
+        scheme = HTTP_SCHEME_MAP[scheme]
+    if scheme not in WEBSOCKET_SCHEMES:
+        raise BrowserCdpError("A böngésző cím csak ws vagy wss cím lehet.")
+    if not parsed.netloc:
+        raise BrowserCdpError("A böngésző cím gazdagépe hiányzik.")
+    try:
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise BrowserCdpError("A böngésző cím portja érvénytelen.") from exc
+    if not hostname or not hostname.strip():
+        raise BrowserCdpError("A böngésző cím gazdagépe hiányzik.")
+    if port is not None and not 0 < port <= 65535:
+        raise BrowserCdpError("A böngésző cím portja érvénytelen.")
+    if parsed.fragment:
+        raise BrowserCdpError("A böngésző cím nem tartalmazhat töredéket.")
+    path = parsed.path or "/"
+    return urlunparse((scheme, parsed.netloc, path, parsed.params, parsed.query, ""))
 
 
 async def _assert_connectable_cdp_url(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("ws", "wss"):
-        raise BrowserCdpError("A böngésző cím csak ws vagy wss cím lehet.")
+    normalized = normalize_cdp_url(url)
+    parsed = urlparse(normalized)
     hostname = (parsed.hostname or "").strip().lower()
     if not hostname:
         raise BrowserCdpError("A böngésző cím gazdagépe hiányzik.")
-    if parsed.username or parsed.password:
-        raise BrowserCdpError("A böngésző cím nem tartalmazhat hitelesítő adatot.")
     if hostname in _allowed_browser_hosts():
+        return
+    if _private_hosts_allowed():
         return
     literals: list[str] = []
     try:
-        ipaddress.ip_address(hostname)
+        ipaddress.ip_address(hostname.split("%", 1)[0])
     except ValueError:
         literals = []
     else:
@@ -1143,7 +1227,7 @@ async def browser_command(
         raise BrowserCdpError("Érvénytelen böngésző művelet.")
     if input_data is not None and not isinstance(input_data, dict):
         raise BrowserCdpError("Érvénytelen beviteli művelet.")
-    normalized_url = url.strip()
+    normalized_url = normalize_cdp_url(url)
     for _attempt in range(MAX_ACQUIRE_ATTEMPTS):
         connection = await _acquire_connection(normalized_url)
         async with connection.command_lock:
@@ -1159,7 +1243,7 @@ async def browser_command(
                     connection.execute(action, input_data),
                     timeout=CDP_OPERATION_TIMEOUT_SECONDS,
                 )
-            except TimeoutError as exc:
+            except (asyncio.TimeoutError, TimeoutError) as exc:
                 raise BrowserCdpError("A böngésző művelet időtúllépett.") from exc
             finally:
                 connection.touch()
