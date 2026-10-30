@@ -47,8 +47,8 @@ class Settings(BaseSettings):
     flymyai_image_model: str = "flymyai/nano-banana-2_1"
 
     model_name: str = Field(
-        default="muse-wonder-1.0",
-        validation_alias=AliasChoices("MUSE_WONDER_MODEL_NAME"),
+        default="muse-spark-1.3-contributor",
+        validation_alias=AliasChoices("MUSE_SPARK_MODEL_NAME"),
     )
     model_fallback_names: str = ""
     model_retry_max: int = 4

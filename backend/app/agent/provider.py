@@ -487,7 +487,7 @@ async def call_model(
         "temperature": 1,
         "max_output_tokens": MODEL_MAX_OUTPUT_TOKENS,
         "top_p": 1,
-        "reasoning": {"effort": "max"},
+        "reasoning": {"effort": "xhigh"},
         "tools": _responses_tools(tools),
     }
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
