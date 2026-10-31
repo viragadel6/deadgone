@@ -36,7 +36,7 @@ CDP_MAX_URL_LENGTH = 8192
 METHOD_NOT_FOUND_CODE = -32601
 SCREENSHOT_FORMAT = "jpeg"
 SCREENSHOT_QUALITY = 75
-ALLOWED_ACTIONS = frozenset({"frame", "input"})
+ALLOWED_ACTIONS = frozenset({"frame", "input", "navigate", "inspect"})
 INPUT_KINDS = frozenset({"text", "key", "mouse", "wheel"})
 KEY_EVENT_TYPES = frozenset({"keyDown", "keyUp", "rawKeyDown", "char"})
 TEXT_GENERATING_KEY_TYPES = frozenset({"keyDown", "char"})
@@ -58,6 +58,8 @@ MAX_KEY_CODE = 65535
 MAX_KEY_LOCATION = 3
 MAX_KEY_LENGTH = 64
 MAX_TEXT_LENGTH = 100_000
+MAX_PAGE_TEXT_LENGTH = 6_000
+MAX_PAGE_LINKS = 20
 MAX_COORDINATE = 100_000.0
 MAX_WHEEL_DELTA = 100_000.0
 DELTA_MODE_PIXEL = 0
@@ -786,6 +788,10 @@ class _CdpConnection:
                 session_id, target_id = await self._acquire_session()
                 if action == "frame":
                     return await self._capture_frame(session_id, target_id)
+                if action == "navigate":
+                    return await self._navigate(session_id, target_id, input_data)
+                if action == "inspect":
+                    return await self._inspect(session_id)
                 return await self._dispatch_input(session_id, input_data)
             except BrowserCdpError as exc:
                 if attempt < 2 and exc.stale_session:
@@ -960,6 +966,110 @@ class _CdpConnection:
             session_id,
         )
         return {"ok": True}
+
+    async def _navigate(
+        self,
+        session_id: str | None,
+        target_id: str | None,
+        input_data: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not isinstance(input_data, dict):
+            raise BrowserCdpError("Hiányzó navigációs adat.")
+        value = input_data.get("url")
+        if not isinstance(value, str) or not value.strip() or len(value) > CDP_MAX_URL_LENGTH:
+            raise BrowserCdpError("Érvénytelen navigációs cím.")
+        url = value.strip()
+        try:
+            parsed = urlparse(url)
+            port = parsed.port
+        except ValueError as exc:
+            raise BrowserCdpError("Érvénytelen navigációs cím.") from exc
+        if (
+            parsed.scheme.lower() not in ("http", "https")
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or (port is not None and not 0 < port <= 65535)
+            or any(character.isspace() or ord(character) < 32 for character in url)
+        ):
+            raise BrowserCdpError("Érvénytelen navigációs cím.")
+        navigation = await self.send("Page.navigate", {"url": url}, session_id)
+        error_text = navigation.get("errorText")
+        if isinstance(error_text, str) and error_text:
+            raise BrowserCdpError(f"A böngésző navigációja sikertelen: {error_text[:200]}")
+        self.metrics = replace(self.metrics, url=url)
+        ready_state = ""
+        deadline = asyncio.get_running_loop().time() + 15.0
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                evaluated = await self.send(
+                    "Runtime.evaluate",
+                    {"expression": "document.readyState", "returnByValue": True},
+                    session_id,
+                )
+            except BrowserCdpError as exc:
+                if exc.stale_session:
+                    raise
+                break
+            result = _record(evaluated.get("result"))
+            state = result.get("value") if result is not None else None
+            ready_state = state if isinstance(state, str) else ""
+            if ready_state in ("interactive", "complete"):
+                break
+            await asyncio.sleep(0.2)
+        return {
+            "url": await self._read_url(session_id, target_id),
+            "ready_state": ready_state or "loading",
+            "loader_id": navigation.get("loaderId"),
+        }
+
+    async def _inspect(self, session_id: str | None) -> dict[str, Any]:
+        expression = (
+            "(() => { const body = document.body; "
+            "const links = Array.from(document.querySelectorAll('a[href]')).slice(0, 20)"
+            ".map((a) => ({text: (a.innerText || a.getAttribute('aria-label') || '').trim()"
+            ".slice(0, 160), url: a.href})); "
+            "return {title: document.title || '', url: location.href, "
+            "text: (body ? body.innerText : '').slice(0, 6000), links}; })()"
+        )
+        evaluated = await self.send(
+            "Runtime.evaluate",
+            {
+                "expression": expression,
+                "returnByValue": True,
+                "awaitPromise": True,
+            },
+            session_id,
+        )
+        if evaluated.get("exceptionDetails") is not None:
+            raise BrowserCdpError("A böngészőoldal tartalmának kiolvasása sikertelen.")
+        result = _record(evaluated.get("result"))
+        value = _record(result.get("value")) if result is not None else None
+        if value is None:
+            raise BrowserCdpError("A böngésző nem adott vissza olvasható oldaltartalmat.")
+        title = value.get("title")
+        url = value.get("url")
+        text = value.get("text")
+        raw_links = value.get("links")
+        links: list[dict[str, str]] = []
+        if isinstance(raw_links, list):
+            for item in raw_links[:MAX_PAGE_LINKS]:
+                link = _record(item)
+                if link is None:
+                    continue
+                link_text = link.get("text")
+                link_url = link.get("url")
+                if not isinstance(link_url, str) or not link_url:
+                    continue
+                if not isinstance(link_text, str):
+                    link_text = ""
+                links.append({"text": link_text[:160], "url": link_url[:CDP_MAX_URL_LENGTH]})
+        return {
+            "title": title[:500] if isinstance(title, str) else "",
+            "url": url[:CDP_MAX_URL_LENGTH] if isinstance(url, str) else "",
+            "text": text[:MAX_PAGE_TEXT_LENGTH] if isinstance(text, str) else "",
+            "links": links,
+        }
 
 
 def _bind_registry() -> None:
