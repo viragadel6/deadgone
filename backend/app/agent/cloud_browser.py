@@ -12,6 +12,7 @@ from urllib.parse import quote, urlparse
 import httpx
 
 from app import database as database_module
+from app.agent.browser_cdp import BrowserCdpError, normalize_cdp_url
 from app.config import get_settings
 from app.database import DatabaseError, SupabaseDatabase
 
@@ -325,11 +326,10 @@ def _live_url(value: Any) -> str | None:
 def _cdp_url(value: Any) -> str:
     if not isinstance(value, str):
         raise CloudBrowserError("The browser did not return a CDP URL.")
-    candidate = value.strip()
-    parsed = urlparse(candidate)
-    if parsed.scheme not in ("ws", "wss") or not parsed.hostname:
-        raise CloudBrowserError("The browser returned an invalid CDP URL.")
-    return candidate
+    try:
+        return normalize_cdp_url(value)
+    except BrowserCdpError as exc:
+        raise CloudBrowserError("The browser returned an invalid CDP URL.") from exc
 
 
 async def _discard_result(
