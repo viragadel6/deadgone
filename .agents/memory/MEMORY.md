@@ -1,3 +1,4 @@
 - [Supabase migration target](supabase-migration-target.md) — verify the CLI project ID, runtime API URL, and direct database connection all refer to the approved project.
 - [Adaptive cognitive orchestration](adaptive-cognitive-orchestration.md) — Muse Wonder chooses app-level cognition; keep provider reasoning settings separate.
+- [Browser Use execution](browser-use-execution.md) — browser actions must use Browser Use Cloud directly, without requiring InstaVM or VM-installed Playwright.
 - [Liquid glass UI consistency](liquid-glass-ui-consistency.md) — new interface components should use the app's existing liquid glass visual style.

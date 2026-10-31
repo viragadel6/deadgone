@@ -150,7 +150,11 @@ def _ipv6_is_private(packed: bytes) -> bool:
     return False
 
 
-async def validate_browser_url(url: str, allowed_hosts: set[str]) -> None:
+async def validate_browser_url(
+    url: str,
+    allowed_hosts: set[str],
+    allow_public_hosts: bool = False,
+) -> None:
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
@@ -163,7 +167,7 @@ async def validate_browser_url(url: str, allowed_hosts: set[str]) -> None:
     if parsed.port and parsed.port != 443:
         raise RequestFault("Ez a böngésző URL nem engedélyezett.", code="NETWORK_DENIED", status_code=403)
     hostname = (parsed.hostname or "").lower()
-    if hostname not in allowed_hosts:
+    if hostname not in allowed_hosts and not (allow_public_hosts and not allowed_hosts):
         raise RequestFault("Ez a böngésző URL nem engedélyezett.", code="NETWORK_DENIED", status_code=403)
     if _private_address(hostname):
         raise RequestFault("Privát vagy nem feloldható böngésző cím.", code="NETWORK_DENIED", status_code=403)

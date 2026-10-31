@@ -14,6 +14,7 @@ MAX_TOOL_ARGUMENT_CHARS = 1_048_576
 MAX_REASON_QUESTION = 8_000
 MAX_REASON_DEPTH = 3
 MAX_REASON_BRANCHES = 3
+MAX_BROWSER_TEXT_CHARS = 10_000
 DEFAULT_EXECUTION_TIMEOUT_SECONDS = 180
 MAX_EXECUTION_TIMEOUT_SECONDS = 1_800
 MAX_PACKAGE_COUNT = 24
@@ -35,6 +36,11 @@ TOOL_NAMES = (
     "consult_advisor",
     "multi_model_consensus",
     "cloud_browser_start",
+    "cloud_browser_navigate",
+    "cloud_browser_inspect",
+    "cloud_browser_click",
+    "cloud_browser_type",
+    "cloud_browser_press_key",
     "cloud_browser_stop",
 )
 
@@ -46,10 +52,21 @@ SANDBOX_TOOLS = frozenset(
         "write_file",
         "read_file",
         "expose_port",
-        "browse_url",
     }
 )
 
+BROWSER_USE_TOOLS = frozenset(
+    {
+        "browse_url",
+        "cloud_browser_start",
+        "cloud_browser_navigate",
+        "cloud_browser_inspect",
+        "cloud_browser_click",
+        "cloud_browser_type",
+        "cloud_browser_press_key",
+        "cloud_browser_stop",
+    }
+)
 
 @dataclass(frozen=True)
 class StringField:
@@ -59,6 +76,7 @@ class StringField:
     max_length: int = 4096
     max_bytes: int | None = None
     nul_forbidden: bool = False
+    choices: tuple[str, ...] = ()
 
     kind = "string"
 
@@ -70,6 +88,8 @@ class StringField:
         if self.min_length > 0 and not value.strip():
             raise RequestFault(f"Invalid argument: {key}", code="INVALID_ARGUMENT")
         if self.nul_forbidden and "\x00" in value:
+            raise RequestFault(f"Invalid argument: {key}", code="INVALID_ARGUMENT")
+        if self.choices and value not in self.choices:
             raise RequestFault(f"Invalid argument: {key}", code="INVALID_ARGUMENT")
         if self.max_bytes is not None and len(value.encode("utf-8")) > self.max_bytes:
             raise RequestFault(f"Invalid argument: {key}", code="INVALID_ARGUMENT")
@@ -131,6 +151,7 @@ def _string(
     max_length: int,
     required: bool = True,
     nul_forbidden: bool = False,
+    choices: tuple[str, ...] = (),
 ) -> StringField:
     return StringField(
         description=description,
@@ -138,6 +159,7 @@ def _string(
         min_length=1 if required else 0,
         max_length=max_length,
         nul_forbidden=nul_forbidden,
+        choices=choices,
     )
 
 
@@ -253,8 +275,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {
     "browse_url": ToolSpec(
         name="browse_url",
         description=(
-            "Navigate a page and fetch its content using a real remote browser, restricted to "
-            "allowed HTTPS hosts."
+            "Open an allowed HTTPS URL in a temporary Browser Use Cloud browser and return the "
+            "page title, visible text, and links."
         ),
         fields={"url": _string("Allowed HTTPS URL", 4096)},
     ),
@@ -371,6 +393,63 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         ),
         fields={"browser_id": _string("Identifier returned by cloud_browser_start", 200)},
     ),
+    "cloud_browser_navigate": ToolSpec(
+        name="cloud_browser_navigate",
+        description="Navigate the active Browser Use Cloud browser to an allowed HTTPS URL.",
+        fields={
+            "browser_id": _string("Identifier returned by cloud_browser_start", 200),
+            "url": _string("Allowed HTTPS URL", 4096),
+        },
+    ),
+    "cloud_browser_inspect": ToolSpec(
+        name="cloud_browser_inspect",
+        description="Read the active browser page title, visible text, and links.",
+        fields={"browser_id": _string("Identifier returned by cloud_browser_start", 200)},
+    ),
+    "cloud_browser_click": ToolSpec(
+        name="cloud_browser_click",
+        description="Click the active browser page at the specified viewport coordinates.",
+        fields={
+            "browser_id": _string("Identifier returned by cloud_browser_start", 200),
+            "x": _integer("Horizontal viewport coordinate", 0, 10_000),
+            "y": _integer("Vertical viewport coordinate", 0, 10_000),
+        },
+    ),
+    "cloud_browser_type": ToolSpec(
+        name="cloud_browser_type",
+        description="Type text into the currently focused field in the active browser.",
+        fields={
+            "browser_id": _string("Identifier returned by cloud_browser_start", 200),
+            "text": _string("Text to type", MAX_BROWSER_TEXT_CHARS),
+        },
+    ),
+    "cloud_browser_press_key": ToolSpec(
+        name="cloud_browser_press_key",
+        description="Press a supported key in the active browser.",
+        fields={
+            "browser_id": _string("Identifier returned by cloud_browser_start", 200),
+            "key": _string(
+                "Keyboard key",
+                16,
+                choices=(
+                    "Enter",
+                    "Tab",
+                    "Escape",
+                    "Backspace",
+                    "Delete",
+                    "ArrowUp",
+                    "ArrowDown",
+                    "ArrowLeft",
+                    "ArrowRight",
+                    "Home",
+                    "End",
+                    "PageUp",
+                    "PageDown",
+                    "Space",
+                ),
+            ),
+        },
+    ),
 }
 
 
@@ -435,6 +514,8 @@ def provider_tools(names: list[str]) -> list[dict[str, Any]]:
                     "maxLength": field_spec.max_length,
                     "description": field_spec.description,
                 }
+                if field_spec.choices:
+                    properties[key]["enum"] = list(field_spec.choices)
             elif isinstance(field_spec, IntegerField):
                 properties[key] = {
                     "type": "integer",
@@ -471,14 +552,17 @@ def provider_tools(names: list[str]) -> list[dict[str, Any]]:
     return tools
 
 
-def enabled_tool_names(insta_key: str | None, browser_host_count: int) -> list[str]:
+def enabled_tool_names(
+    insta_key: str | None,
+    browser_use_key: str | None = None,
+) -> list[str]:
     names: list[str] = []
+    browser_use_enabled = bool(browser_use_key and browser_use_key.strip())
     for name in TOOL_NAMES:
-        if name in SANDBOX_TOOLS:
-            if insta_key is None:
-                continue
-            if name == "browse_url" and browser_host_count == 0:
-                continue
+        if name in SANDBOX_TOOLS and insta_key is None:
+            continue
+        if name in BROWSER_USE_TOOLS and not browser_use_enabled:
+            continue
         names.append(name)
     return names
 
@@ -492,6 +576,11 @@ TOOL_ACTIONS: dict[str, str] = {
     "run_python": "Executing Python on the virtual machine.",
     "browse_url": "Opening and reviewing the web page.",
     "cloud_browser_start": "Starting the cloud browser.",
+    "cloud_browser_navigate": "Navigating the cloud browser.",
+    "cloud_browser_inspect": "Inspecting the cloud browser page.",
+    "cloud_browser_click": "Clicking in the cloud browser.",
+    "cloud_browser_type": "Typing in the cloud browser.",
+    "cloud_browser_press_key": "Pressing a key in the cloud browser.",
     "cloud_browser_stop": "Stopping the cloud browser and retrieving the recording.",
     "delegate_task": "A helper model is working on the sub-task.",
     "consult_advisor": "Requesting the opinion of a helper model about the blockage.",

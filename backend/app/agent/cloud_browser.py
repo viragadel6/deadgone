@@ -12,7 +12,7 @@ from urllib.parse import quote, urlparse
 import httpx
 
 from app import database as database_module
-from app.agent.browser_cdp import BrowserCdpError, normalize_cdp_url
+from app.agent.browser_cdp import BrowserCdpError, browser_command, normalize_cdp_url
 from app.config import get_settings
 from app.database import DatabaseError, SupabaseDatabase
 
@@ -699,7 +699,10 @@ async def _await_creation(
 
 
 async def start_cloud_browser(
-    country_code: Any, timeout_minutes: Any, cancel: asyncio.Event | None
+    country_code: Any,
+    timeout_minutes: Any,
+    cancel: asyncio.Event | None,
+    enable_recording: bool = True,
 ) -> dict[str, Any]:
     creation_task: asyncio.Task[dict[str, Any]] | None = None
     try:
@@ -714,7 +717,7 @@ async def start_cloud_browser(
                     "proxyCountryCode": proxy_country,
                     "timeout": timeout,
                     "allowResizing": True,
-                    "enableRecording": True,
+                    "enableRecording": enable_recording,
                     "browserScreenWidth": BROWSER_SCREEN_WIDTH,
                     "browserScreenHeight": BROWSER_SCREEN_HEIGHT,
                 },
@@ -738,8 +741,9 @@ async def start_cloud_browser(
                 "screen_width": BROWSER_SCREEN_WIDTH,
                 "screen_height": BROWSER_SCREEN_HEIGHT,
                 "usage": (
-                    "Connect from the VM using Playwright: chromium.connect_over_cdp(cdp_url). "
-                    "When finished, call the cloud_browser_stop tool."
+                    "Use the cloud_browser_navigate, cloud_browser_inspect, "
+                    "cloud_browser_click, cloud_browser_type, and cloud_browser_press_key "
+                    "tools to control this browser directly. Call cloud_browser_stop when done."
                 ),
             },
         }
@@ -806,7 +810,11 @@ def _stopped_state(state: dict[str, Any]) -> bool:
     return False
 
 
-async def stop_cloud_browser(browser_id: Any, cancel: asyncio.Event | None) -> dict[str, Any]:
+async def stop_cloud_browser(
+    browser_id: Any,
+    cancel: asyncio.Event | None,
+    retrieve_recording: bool = True,
+) -> dict[str, Any]:
     try:
         normalized_id = _normalized_browser_id(browser_id)
     except CloudBrowserError as exc:
@@ -842,6 +850,13 @@ async def stop_cloud_browser(browser_id: Any, cancel: asyncio.Event | None) -> d
     except Exception as exc:
         logger.warning("cloud_browser: a leállítási kérés váratlan hibája: %r", exc)
         return _failure(exc)
+    if not retrieve_recording:
+        return _stopped_payload(
+            normalized_id,
+            None,
+            False,
+            "The browser stop request was accepted; recording retrieval was disabled.",
+        )
     recording_url: str | None = None
     confirmed = False
     recording_error: str | None = None
@@ -975,6 +990,72 @@ async def register_chat_browser(job_id: Any, result: Any) -> str:
     if session_id is None or not str(session_id).strip():
         raise CloudBrowserError("Saving the browser session failed: the session id is missing.")
     return str(session_id).strip()
+
+
+async def chat_browser_cdp_url(job_id: Any, browser_id: Any) -> str:
+    raw_job_id = _normalized_job_id(job_id)
+    normalized_id = _normalized_browser_id(browser_id)
+    database = database_module.get_admin_database()
+    try:
+        response = await (
+            database.table(SESSION_TABLE)
+            .select("cdp_url")
+            .eq("job_id", raw_job_id)
+            .eq("browser_id", normalized_id)
+            .eq("status", "active")
+            .limit(1)
+            .execute()
+        )
+    except DatabaseError as exc:
+        raise CloudBrowserError(f"Reading the active browser session failed: {exc}") from exc
+    row = _first_row(response)
+    if row is None:
+        raise CloudBrowserError("The active browser session does not belong to this task.")
+    return _cdp_url(row.get("cdp_url"))
+
+
+async def browse_url(url: str, cancel: asyncio.Event | None) -> dict[str, Any]:
+    browser_id: str | None = None
+    try:
+        started = await start_cloud_browser("us", 1, cancel, enable_recording=False)
+        if started.get("status") != "completed":
+            return started
+        result = started.get("result")
+        record = result if isinstance(result, dict) else {}
+        browser_id = str(record.get("browser_id") or "").strip()
+        if not browser_id:
+            raise CloudBrowserError("The browser did not return an identifier.")
+        cdp_url = _cdp_url(record.get("cdp_url"))
+        await browser_command(cdp_url, "navigate", {"url": url})
+        page = await browser_command(cdp_url, "inspect")
+        payload = {"status": "completed", "result": page}
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _raise_if_cancelled(cancel)
+        payload = _failure(exc)
+    finally:
+        if browser_id:
+            cleanup_task = _retain_task(
+                stop_cloud_browser(browser_id, None, retrieve_recording=False)
+            )
+            try:
+                interruption = await _await_protected(
+                    cleanup_task, CLEANUP_DEADLINE_SECONDS, "temporary browser cleanup"
+                )
+                if interruption is not None:
+                    raise interruption
+                cleanup_result = cleanup_task.result()
+                if cleanup_result.get("status") != "completed":
+                    logger.warning(
+                        "cloud_browser: ideiglenes böngésző lezárása sikertelen: %r",
+                        cleanup_result.get("result"),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("cloud_browser: ideiglenes böngésző lezárása sikertelen: %r", exc)
+    return payload
 
 
 def _claimed(data: Any) -> bool:

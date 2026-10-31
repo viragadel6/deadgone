@@ -14,9 +14,10 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.agent import cloud_browser, subagents
+from app.agent.browser_cdp import browser_command
 from app.agent import cognitive as cog
 from app.agent.provider import call_model, receive_model
-from app.agent.sandbox import Sandbox, sanitize_result
+from app.agent.sandbox import Sandbox, sanitize_result, validate_browser_url
 from app.agent.tools import (
     enabled_tool_names,
     provider_tools,
@@ -132,6 +133,22 @@ SANDBOX_RETRY_CODES = frozenset(
 )
 SANDBOX_FATAL_CODES = frozenset({"PROVIDER_AUTH", "PROVIDER_REJECTED", "SANDBOX_DISABLED"})
 IDEMPOTENT_TOOLS = frozenset({"read_file", "browse_url"})
+BROWSER_KEY_DATA = {
+    "Enter": {"key": "Enter", "code": "Enter", "keyCode": 13},
+    "Tab": {"key": "Tab", "code": "Tab", "keyCode": 9},
+    "Escape": {"key": "Escape", "code": "Escape", "keyCode": 27},
+    "Backspace": {"key": "Backspace", "code": "Backspace", "keyCode": 8},
+    "Delete": {"key": "Delete", "code": "Delete", "keyCode": 46},
+    "ArrowUp": {"key": "ArrowUp", "code": "ArrowUp", "keyCode": 38},
+    "ArrowDown": {"key": "ArrowDown", "code": "ArrowDown", "keyCode": 40},
+    "ArrowLeft": {"key": "ArrowLeft", "code": "ArrowLeft", "keyCode": 37},
+    "ArrowRight": {"key": "ArrowRight", "code": "ArrowRight", "keyCode": 39},
+    "Home": {"key": "Home", "code": "Home", "keyCode": 36},
+    "End": {"key": "End", "code": "End", "keyCode": 35},
+    "PageUp": {"key": "PageUp", "code": "PageUp", "keyCode": 33},
+    "PageDown": {"key": "PageDown", "code": "PageDown", "keyCode": 34},
+    "Space": {"key": " ", "code": "Space", "keyCode": 32},
+}
 FATAL_CODES = frozenset(
     {
         "CANCELLED",
@@ -516,7 +533,10 @@ class AgentRuntime:
                 break
         self.started_at = datetime.now(UTC).isoformat()
         self.plan = PlanState()
-        self.enabled = enabled_tool_names(config.insta_key, len(config.browser_hosts))
+        self.enabled = enabled_tool_names(
+            config.insta_key,
+            get_settings().browser_use_api_key,
+        )
         self.tools = provider_tools(self.enabled)
         self.budget = ContextBudget(self.tools)
         self.sandbox: Sandbox | None = None
@@ -944,7 +964,24 @@ class AgentRuntime:
                     str(args.get("question") or ""), context, self.cancel
                 )
             return ToolOutput(status=ToolStatus(payload["status"]), result=payload["result"])
-        if name in ("cloud_browser_start", "cloud_browser_stop"):
+        if name == "browse_url":
+            url = str(args.get("url") or "")
+            await validate_browser_url(
+                url,
+                set(self.config.browser_hosts),
+                allow_public_hosts=not self.config.browser_hosts,
+            )
+            payload = await cloud_browser.browse_url(url, self.cancel)
+            return ToolOutput(status=ToolStatus(payload["status"]), result=payload["result"])
+        if name in (
+            "cloud_browser_start",
+            "cloud_browser_navigate",
+            "cloud_browser_inspect",
+            "cloud_browser_click",
+            "cloud_browser_type",
+            "cloud_browser_press_key",
+            "cloud_browser_stop",
+        ):
             if name == "cloud_browser_start":
                 country = str(args.get("country_code") or "").strip().lower() or "us"
                 minutes = args.get("timeout_minutes")
@@ -952,11 +989,77 @@ class AgentRuntime:
                 payload = await cloud_browser.start_cloud_browser(
                     country, timeout_minutes, self.cancel
                 )
-            else:
-                payload = await cloud_browser.stop_cloud_browser(
-                    str(args.get("browser_id") or ""), self.cancel
+                return ToolOutput(
+                    status=ToolStatus(payload["status"]), result=payload["result"]
                 )
-            return ToolOutput(status=ToolStatus(payload["status"]), result=payload["result"])
+            browser_id = str(args.get("browser_id") or "")
+            if name == "cloud_browser_stop":
+                await cloud_browser.chat_browser_cdp_url(self.task_id, browser_id)
+                payload = await cloud_browser.stop_cloud_browser(browser_id, self.cancel)
+                return ToolOutput(
+                    status=ToolStatus(payload["status"]), result=payload["result"]
+                )
+            cdp_url = await cloud_browser.chat_browser_cdp_url(self.task_id, browser_id)
+            if name == "cloud_browser_navigate":
+                url = str(args.get("url") or "")
+                await validate_browser_url(
+                    url,
+                    set(self.config.browser_hosts),
+                    allow_public_hosts=not self.config.browser_hosts,
+                )
+                result = await browser_command(cdp_url, "navigate", {"url": url})
+            elif name == "cloud_browser_inspect":
+                result = await browser_command(cdp_url, "inspect")
+            elif name == "cloud_browser_click":
+                x = args["x"]
+                y = args["y"]
+                await browser_command(
+                    cdp_url,
+                    "input",
+                    {
+                        "kind": "mouse",
+                        "type": "mousePressed",
+                        "x": x,
+                        "y": y,
+                        "button": "left",
+                        "clickCount": 1,
+                        "buttons": 1,
+                        "modifiers": 0,
+                    },
+                )
+                result = await browser_command(
+                    cdp_url,
+                    "input",
+                    {
+                        "kind": "mouse",
+                        "type": "mouseReleased",
+                        "x": x,
+                        "y": y,
+                        "button": "left",
+                        "clickCount": 1,
+                        "buttons": 0,
+                        "modifiers": 0,
+                    },
+                )
+            elif name == "cloud_browser_type":
+                result = await browser_command(
+                    cdp_url, "input", {"kind": "text", "text": str(args.get("text") or "")}
+                )
+            else:
+                key = str(args.get("key") or "")
+                key_data = BROWSER_KEY_DATA[key]
+                for event_type in ("keyDown", "keyUp"):
+                    result = await browser_command(
+                        cdp_url,
+                        "input",
+                        {
+                            "kind": "key",
+                            "type": event_type,
+                            **key_data,
+                            "modifiers": 0,
+                        },
+                    )
+            return ToolOutput(status=ToolStatus.COMPLETED, result=result)
         if name == "update_plan":
             plan_text = str(args.get("plan") or "")
             plan.plan = plan_text
@@ -1029,9 +1132,52 @@ class AgentRuntime:
             browser_id = _browser_id_from(result)
             if browser_id:
                 self.cloud_browsers.add(browser_id)
-                result.result["viewer_id"] = await cloud_browser.register_chat_browser(
-                    self.task_id, result.result
-                )
+                try:
+                    viewer_id = await cloud_browser.register_chat_browser(
+                        self.task_id, result.result
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "cloud_browser_session_registration_failed",
+                        extra={
+                            "job_id": self.task_id,
+                            "browser_id": browser_id,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+                    stopped = await cloud_browser.stop_cloud_browser(
+                        browser_id, None, retrieve_recording=False
+                    )
+                    if stopped.get("status") == "completed":
+                        self.cloud_browsers.discard(browser_id)
+                        try:
+                            await cloud_browser.mark_chat_browser_stopped(browser_id)
+                        except Exception as cleanup_error:
+                            logger.warning(
+                                "cloud_browser_session_cleanup_failed",
+                                extra={
+                                    "job_id": self.task_id,
+                                    "browser_id": browser_id,
+                                    "error_type": type(cleanup_error).__name__,
+                                },
+                            )
+                    message = "The cloud browser session could not be saved."
+                    return ToolOutput(
+                        status=ToolStatus.ERROR,
+                        result={
+                            "code": "BROWSER_SESSION_REGISTRATION_FAILED",
+                            "message": message,
+                        },
+                        error=ToolError(
+                            code=ToolErrorCode.EXECUTION_ERROR,
+                            message=message,
+                            details={"fault_code": "BROWSER_SESSION_REGISTRATION_FAILED"},
+                        ),
+                    )
+                result.result["viewer_id"] = viewer_id
+                result.result.pop("cdp_url", None)
         if name == "cloud_browser_stop" and result.status == ToolStatus.COMPLETED:
             browser_id = as_str(args.get("browser_id"))
             self.cloud_browsers.discard(browser_id)
