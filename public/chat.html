@@ -1,6 +1,78 @@
 <!DOCTYPE html>
 <html lang="hu">
 <head>
+<script>
+(function(){
+  "use strict";
+  var storageKey="chat_session_bootstrap_v1";
+  var cookieKey="chat_session_bootstrap";
+  var bootstrap="";
+  function valid(value){
+    return typeof value==="string"&&/^[0-9a-f]{64}$/.test(value);
+  }
+  function readCookie(){
+    var entries=document.cookie?document.cookie.split(";"):[];
+    for(var index=0;index<entries.length;index++){
+      var entry=entries[index].trim();
+      var separator=entry.indexOf("=");
+      if(separator<0||entry.slice(0,separator)!==cookieKey)continue;
+      var value=entry.slice(separator+1);
+      if(valid(value))return value;
+    }
+    return "";
+  }
+  function writeCookie(value){
+    var secure=window.location.protocol==="https:"?"; Secure":"";
+    document.cookie=cookieKey+"="+value+"; Path=/; Max-Age=31536000; SameSite=Lax"+secure;
+    return readCookie()===value;
+  }
+  try{
+    bootstrap=window.localStorage.getItem(storageKey)||"";
+  }catch(error){
+    bootstrap="";
+  }
+  if(!valid(bootstrap))bootstrap=readCookie();
+  if(!valid(bootstrap)){
+    if(!window.crypto||typeof window.crypto.getRandomValues!=="function"){
+      throw new Error("A biztonságos munkamenet nem hozható létre ebben a böngészőben.");
+    }
+    var bytes=new Uint8Array(32);
+    window.crypto.getRandomValues(bytes);
+    bootstrap=Array.prototype.map.call(bytes,function(byte){
+      return byte.toString(16).padStart(2,"0");
+    }).join("");
+  }
+  var persisted=false;
+  try{
+    window.localStorage.setItem(storageKey,bootstrap);
+    persisted=window.localStorage.getItem(storageKey)===bootstrap;
+  }catch(error){
+    persisted=false;
+  }
+  if(!persisted)persisted=writeCookie(bootstrap);
+  var originalFetch=window.fetch.bind(window);
+  window.fetch=function(input,init){
+    var urlValue=typeof Request!=="undefined"&&input instanceof Request?input.url:String(input);
+    var url;
+    try{
+      url=new URL(urlValue,window.location.href);
+    }catch(error){
+      return originalFetch(input,init);
+    }
+    if(url.origin!==window.location.origin||(url.pathname!=="/api"&&url.pathname.indexOf("/api/")!==0)){
+      return originalFetch(input,init);
+    }
+    if(!persisted)return Promise.reject(new Error("A kérés nem indítható el a böngésző tartós tárhelye nélkül."));
+    var headers=new Headers(typeof Request!=="undefined"&&input instanceof Request?input.headers:undefined);
+    if(init&&init.headers){
+      new Headers(init.headers).forEach(function(value,name){headers.set(name,value);});
+    }
+    if(!headers.has("x-session-bootstrap"))headers.set("x-session-bootstrap",bootstrap);
+    var requestInit=Object.assign({},init||{},{headers:headers});
+    return originalFetch(input,requestInit);
+  };
+})();
+</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">

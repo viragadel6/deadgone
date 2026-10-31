@@ -148,12 +148,7 @@ def _derive_client_id(request: Request) -> str:
     if supplied is None or not supplied.strip(" \t"):
         raise HTTPException(
             status_code=428,
-            detail=(
-                f"A cookie nélküli kérésekhez {SESSION_BOOTSTRAP_HEADER} szükséges. "
-                "A kliens egyszer hozzon létre egy kriptográfiailag véletlen, "
-                "64 karakteres kisbetűs hexadecimális kulcsot, tárolja tartósan, "
-                "és ugyanazt az értéket küldje minden kezdeti párhuzamos kérésben."
-            ),
+            detail="A kérés nem feldolgozható.",
             headers={"Cache-Control": "no-store"},
         )
     if len(supplied) > MAX_TOKEN_LENGTH:
